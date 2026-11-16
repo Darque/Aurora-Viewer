@@ -94,6 +94,8 @@ pub(super) struct Session {
     hd_confirm: Option<i32>,
     /// Worn from here: the outfit worn before (None: none was known).
     previous: Option<Option<Uuid>>,
+    /// The reusable base before the portrait temporarily wore another outfit.
+    previous_base: Option<Option<Vec<Uuid>>>,
     /// The photo part is over (camera, isolation and light restored): the
     /// window asks whether to put the previous outfit back.
     over: bool,
@@ -163,6 +165,7 @@ impl App {
             shot: None,
             hd_confirm: None,
             previous: None,
+            previous_base: None,
             over: false,
             saved: false,
             vf_pose: false,
@@ -498,7 +501,7 @@ impl App {
             previous: s
                 .previous
                 .map(|p| p.and_then(|id| inv.folders.get(&id)).map(|f| f.info.name.as_str())),
-            dirty: crate::world::appearance::dirty(inv),
+            dirty: crate::world::base_outfits::dirty(inv, self.appearance_ui.base_sets.data.active.as_ref()),
             shooting: s.shooting || s.shot_wanted,
             over: s.over,
             saved: s.saved,
@@ -582,6 +585,14 @@ impl App {
             window::Action::Wear => {
                 if s.previous.is_none() {
                     s.previous = Some(crate::world::appearance::base(&self.world.inventory));
+                    s.previous_base = Some(
+                        self.appearance_ui
+                            .base_sets
+                            .data
+                            .active
+                            .as_ref()
+                            .map(crate::world::base_outfits::Active::folders),
+                    );
                 }
                 s.reframe = Some(Instant::now() + REFRAME);
                 log::info!("outfit portrait: wearing {outfit} for the photo");
@@ -590,6 +601,7 @@ impl App {
             window::Action::PutBack => {
                 if let Some(Some(previous)) = s.previous {
                     log::info!("outfit portrait: the previous outfit {previous} put back");
+                    self.appearance_ui.restore_base_after_outfit = s.previous_base.clone();
                     self.apply_appearance_action(crate::world::appearance::Action::Wear(previous, false));
                 }
                 self.close_outfit_portrait();
@@ -599,12 +611,14 @@ impl App {
                 // the same outfit in the square photo mode, the choices kept
                 let settings = s.settings;
                 let previous = s.previous;
+                let previous_base = s.previous_base.clone();
                 self.end_outfit_portrait_photo();
                 self.outfit_portrait = None;
                 self.settings.outfit_portrait = settings;
                 self.open_outfit_portrait(outfit, Kind::Viewfinder);
                 if let Some(s) = &mut self.outfit_portrait {
                     s.previous = previous;
+                    s.previous_base = previous_base;
                 }
             }
             window::Action::Reframe => {

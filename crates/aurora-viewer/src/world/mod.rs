@@ -7,6 +7,7 @@ pub mod appearance_xml;
 pub mod attachment_inventory;
 pub mod attention;
 pub mod avatar_marks;
+pub mod base_outfits;
 pub mod blocking;
 pub mod body;
 pub mod bubble_chat;

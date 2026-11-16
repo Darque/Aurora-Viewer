@@ -87,7 +87,10 @@ pub fn get() -> &'static Cli {
             std::process::exit(0);
         }
         if cli.version {
-            println!("{}", aurora_i18n::tr!("common-aurora-viewer", value0 = aurora_version::version()));
+            println!(
+                "{}",
+                aurora_i18n::tr!("common-aurora-viewer", value0 = aurora_version::login_version())
+            );
             std::process::exit(0);
         }
         cli

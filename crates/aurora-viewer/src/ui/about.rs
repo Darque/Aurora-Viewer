@@ -123,7 +123,7 @@ pub fn release_notes(version: &str) -> Option<String> {
 /// its English labels).
 pub fn copy_text(sections: &[Section]) -> String {
     let version = aurora_version::version();
-    let mut out = format!("Aurora Viewer {version}\n");
+    let mut out = format!("{} {}\n", aurora_version::VIEWER_NAME, aurora_version::login_version());
     if let Some(url) = release_notes(version) {
         out.push_str(&format!("Release notes: {url}\n"));
     }
@@ -264,7 +264,7 @@ fn hero(ui: &mut egui::Ui, p: &Palette, logo: Option<&egui::TextureHandle>) {
         }
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
-            ui.label(sheet::semibold(ui, "Aurora Viewer", 22.0, p.ink));
+            ui.label(sheet::semibold(ui, aurora_version::VIEWER_NAME, 22.0, p.ink));
             ui.label(RichText::new(crate::ui::login::client_tagline()).size(12.0).color(p.violet_pale));
             ui.add(
                 egui::Label::new(
@@ -277,7 +277,7 @@ fn hero(ui: &mut egui::Ui, p: &Palette, logo: Option<&egui::TextureHandle>) {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-                sheet::pill(ui, p, Tone::Group, "tag-filled", aurora_version::version());
+                sheet::pill(ui, p, Tone::Group, "tag-filled", aurora_version::login_version());
                 let build = aurora_i18n::tr!("about-build-pill", profile = build_label());
                 sheet::pill(ui, p, Tone::Neutral, "", &build);
             });
@@ -516,7 +516,7 @@ mod tests {
         ];
         let text = copy_text(&sections);
         let blocks: Vec<&str> = text.split("\n\n").collect();
-        assert!(blocks[0].starts_with(&format!("Aurora Viewer {}", aurora_version::version())));
+        assert!(blocks[0].starts_with(&format!("{} {}", aurora_version::VIEWER_NAME, aurora_version::login_version())));
         assert_eq!(
             blocks[1],
             format!(

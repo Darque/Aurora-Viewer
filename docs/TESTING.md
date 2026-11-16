@@ -10291,8 +10291,28 @@ the Appearance window then opens on its Worn tab with the five objects
 worn. `cold` hides the five items from the inventory until FetchItems asks
 for them (`5 to look up`), as a cold inventory cache.
 
-**`AURORA_DEMO_APPEARANCE=gallery|gallery-fit|gallery-fill|showcase|portrait|portrait-not-worn|portrait-shot|portrait-bust|portrait-face|portrait-profile|photo-mode|portrait-hd|portrait-hd-poor|photo-mode-hd|batch|batch-run|batch-hd|batch-hd-poor|outfits|multi-gallery|multi-outfits|multi-items|multi-worn|clipboard|folders|folders-outfits|folders-many|folders-many-outfits|worn|save|edit|layers|layers-drag|layers-hold|wearables|wearables-outfits|wearables-edit|menu|duplicates|broken|take-off-folder|json-import|json-partial|xml|xml-unavailable`**
+**`AURORA_DEMO_APPEARANCE=base-outfits|gallery|gallery-fit|gallery-fill|showcase|portrait|portrait-not-worn|portrait-shot|portrait-bust|portrait-face|portrait-profile|photo-mode|portrait-hd|portrait-hd-poor|photo-mode-hd|batch|batch-run|batch-hd|batch-hd-poor|outfits|multi-gallery|multi-outfits|multi-items|multi-worn|clipboard|folders|folders-outfits|folders-many|folders-many-outfits|worn|save|edit|layers|layers-drag|layers-hold|wearables|wearables-outfits|wearables-edit|menu|duplicates|broken|take-off-folder|json-import|json-partial|xml|xml-unavailable`**
 — opens Appearance with four synthetic outfits:
+
+- `base-outfits`: opens the showcase on All base outfits with synthetic body
+  bases, a hair base containing a hair mesh and tinted eyebrow tattoo, and two
+  clothing outfits. Appearance tabs should read Outfit gallery, Base outfits,
+  Outfits and Worn; the gallery rail should read Base outfits, Outfits,
+  Favorites and No picture. Base folders should show without their leading
+  period everywhere in Appearance. The base gallery should appear before All
+  outfits, show all bases, and allow their portrait actions. Start with Base A,
+  add the Hair Base from its card, and verify Base A remains worn. Wear Clothes
+  with base and verify Base B and Hair Base replace the overlapping body base
+  while clothing loads; the hair mesh and eyebrow tint both appear. Then wear
+  Clothes without base and verify the active bases stay on. Swap to Base A and
+  verify clothing and the independent hair base stay on. Linked outfit cards
+  and their base picker show linked base names; rows in the Outfits tab show
+  only outfit names. Adding a path back to the clothing folder must be refused
+  without changing the Current Outfit. Right-click a base and a clothing outfit:
+  each Save to this outfit action should be enabled, and move actions should
+  name their destination. Confirm a save to a base and verify it stores the
+  worn item links without changing the Current Outfit's folder links. All items
+  are made by the offline demo.
 
 - `xml`: opens Appearance’s gear menu at frame 650, showing Export my
   appearance XML. Capture at frame 720 or later. Click it to test the native

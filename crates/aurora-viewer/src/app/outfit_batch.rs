@@ -126,6 +126,7 @@ pub(super) struct Batch {
     /// parts.
     start: Option<Uuid>,
     start_parts: Vec<Uuid>,
+    start_base: Option<Vec<Uuid>>,
     last_wear: Option<Instant>,
     /// The loading's signals last read.
     checked: Option<Instant>,
@@ -275,6 +276,7 @@ impl App {
             settings: PortraitSettings::opening(&self.settings.outfit_portrait),
             start,
             start_parts: Vec::new(),
+            start_base: None,
             last_wear: None,
             checked: None,
             open: true,
@@ -289,7 +291,7 @@ impl App {
         let inv = &self.world.inventory;
         if model::base(inv).is_none() {
             Some(window::Blocked::NoStart)
-        } else if model::dirty(inv) {
+        } else if crate::world::base_outfits::dirty(inv, self.appearance_ui.base_sets.data.active.as_ref()) {
             Some(window::Blocked::Unsaved)
         } else {
             None
@@ -341,6 +343,13 @@ impl App {
         }
         let start = model::base(&self.world.inventory);
         let parts = body_parts(&self.world.inventory);
+        let start_base = self
+            .appearance_ui
+            .base_sets
+            .data
+            .active
+            .as_ref()
+            .map(crate::world::base_outfits::Active::folders);
         // the auto portrait's window or the square photo mode give way
         if self.outfit_portrait.is_some() {
             self.close_outfit_portrait();
@@ -350,6 +359,7 @@ impl App {
         };
         b.start = start;
         b.start_parts = parts;
+        b.start_base = start_base;
         b.phase = Phase::Running { paused: false };
         log::info!(
             "outfit batch: started on {} outfits, {start:?} put back at the end",
@@ -569,7 +579,7 @@ impl App {
             worn: 0,
             total: 0,
         };
-        if model::base(inv) == Some(outfit) && !model::dirty(inv) {
+        if model::base(inv) == Some(outfit) && !crate::world::base_outfits::dirty(inv, self.appearance_ui.base_sets.data.active.as_ref()) {
             return Some(loading(true, false, -1));
         }
         let ready = !paused && self.appearance_ui.pending.is_none() && wear_due(last, now) && model::complete(inv, outfit);
@@ -606,11 +616,19 @@ impl App {
         let pending = self.appearance_ui.pending.is_some();
         let back = b.start.is_some_and(|start| model::base(inv) == Some(start));
         let parts_back = b.start_parts.is_empty() || body_parts(inv) == b.start_parts;
+        let base_back = self
+            .appearance_ui
+            .base_sets
+            .data
+            .active
+            .as_ref()
+            .map(crate::world::base_outfits::Active::folders)
+            == b.start_base;
         let due = !pending && wear_due(b.last_wear, now);
         let late = now.saturating_duration_since(since) >= RESTORE_LIMIT;
         let phase = match step {
             _ if b.start.is_none() => Some(Phase::Finished { restored: false }),
-            _ if back && parts_back && !pending => Some(Phase::Finished { restored: true }),
+            _ if back && parts_back && base_back && !pending => Some(Phase::Finished { restored: true }),
             _ if late => Some(Phase::Finished { restored: false }),
             Restore::Outfit => due.then_some(Phase::Restoring {
                 since,
@@ -630,6 +648,7 @@ impl App {
             return;
         };
         let start = b.start;
+        let start_base = b.start_base.clone();
         let parts = b.start_parts.clone();
         b.phase = phase;
         match phase {
@@ -639,6 +658,7 @@ impl App {
                 if let Some(start) = start {
                     log::info!("outfit batch: putting {start} back");
                     b.last_wear = Some(now);
+                    self.appearance_ui.restore_base_after_outfit = Some(start_base);
                     self.apply_appearance_action(model::Action::Wear(start, false));
                 }
             }

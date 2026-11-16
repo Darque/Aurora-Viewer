@@ -5131,3 +5131,18 @@ independent. Pending or over-budget avatars draw neutral silhouette cards rather
 than disappearing; cards have a dynamically sized instance buffer.
 
 `build/linking.rs` follows LLSelectMgr::enableLinkObjects / linkObjects: full selection properties and effective rights are checked before sending, with permanent-object, region, owner, RLVa and animated-mesh limits shared by both layouts and the object menu. Scene mesh-header estimates are refreshed before editor input. `aurora-net::build::link_batches` retains the root in every 254-object packet; confirmation accounts for later batches preceding earlier children. OpenRegionInfo supplies the region link limit; SimulatorFeatures supplies the animated-object triangle budget.
+
+`world/base_outfits.rs` identifies reusable bases by a leading period in a
+My Outfits folder name, resolves ordinary folder links with cycle and loading
+checks, and infers active bases from confirmed Current Outfit items. Clothing
+outfits can link to several bases; the planner expands them into one Current
+Outfit update. Changing clothing without linked bases keeps active bases, while
+wearing another base replaces only active bases with overlapping body-part or
+attachment slots, keeping clothing and independent bases such as a body and
+hair set. Appearance has Gallery, Base outfits, Outfits and Worn tabs; the
+gallery rail lists Base outfits, Outfits, Favorites and No picture, with the
+existing portrait actions on cards. The leading period stays visible in
+Inventory and is hidden from other Appearance views. Active membership is
+session state inferred from inventory on startup rather than persisted locally;
+inventory links provide the cross-installation association. Temporary portrait
+outfit changes queue restoration of all earlier bases.

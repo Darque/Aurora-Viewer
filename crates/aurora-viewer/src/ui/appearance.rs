@@ -25,6 +25,11 @@ mod selection;
 mod showcase;
 pub use clipboard::{PasteTo, Request as ClipboardRequest};
 
+const TAB_GALLERY: usize = 0;
+const TAB_BASES: usize = 1;
+const TAB_OUTFITS: usize = 2;
+const TAB_WORN: usize = 3;
+
 #[derive(Default)]
 pub struct AppearanceUi {
     /// The account whose outfit pictures were read this session.
@@ -33,6 +38,10 @@ pub struct AppearanceUi {
     /// (`outfit_picture`), and the inventory generation they were found at.
     fallback_pictures: (u64, HashMap<Uuid, Uuid>),
     pub(crate) json: json::State,
+    pub(crate) base_sets: crate::world::base_outfits::Store,
+    pub(crate) pending_base: Option<crate::world::base_outfits::Active>,
+    pub(crate) pending_base_removals: HashSet<Uuid>,
+    pub(crate) restore_base_after_outfit: Option<Option<Vec<Uuid>>>,
     pub tab: usize,
     pub fill_previews: bool,
     /// The gallery tab as Aurora's showcase (`showcase.rs`) rather than the
@@ -93,6 +102,7 @@ pub struct AppearanceUi {
     pub wanted_images: HashSet<Uuid>,
     /// What `prepare` walked at the last inventory change.
     prepared: Option<Prepared>,
+    base_prepared: Option<BasePrepared>,
     /// The outfits shown, filtered and sorted, and what they came from.
     shown: Option<Shown>,
     /// The list's outfits whose header was open at the last frame, `None`
@@ -153,6 +163,15 @@ struct Prepared {
     missing: HashMap<Uuid, ((i32, usize), Vec<Uuid>)>,
 }
 
+/// The selected and active base graph, rebuilt only when inventory or the
+/// selection changes, so a large base is not traversed on every frame.
+struct BasePrepared {
+    generation: u64,
+    roots: Vec<Uuid>,
+    folders: Vec<Uuid>,
+    missing: HashSet<Uuid>,
+}
+
 /// The groups and outfits of My Outfits that match the filter, in display
 /// order, without what closed groups hide.
 struct Shown {
@@ -164,6 +183,8 @@ struct Shown {
     /// The showcase lists the outfits of closed groups too: it has no
     /// group headers to open them by.
     showcase: bool,
+    base_tab: bool,
+    base_ids: HashSet<Uuid>,
     entries: Vec<crate::world::outfit_folders::Entry>,
     outfits: Vec<Uuid>,
     /// The outfits matching the filter, those of closed groups included.
@@ -172,14 +193,21 @@ struct Shown {
 
 impl AppearanceUi {
     pub fn open_outfit(&mut self, id: Uuid) {
-        self.open(1, false);
+        self.open(
+            if self.base_sets.data.folders.contains(&id) {
+                TAB_BASES
+            } else {
+                TAB_OUTFITS
+            },
+            false,
+        );
         self.outfit_selection.single(id);
         self.reveal_outfit = Some(id);
         self.clear_items();
         self.search.clear();
     }
     pub fn open(&mut self, tab: usize, editing: bool) {
-        self.tab = tab.min(2);
+        self.tab = tab.min(3);
         self.editing = editing;
         self.adding = false;
     }
@@ -187,14 +215,40 @@ impl AppearanceUi {
     /// as LLPanelOutfitsInventory::onOpen selects `LastAppearanceTab`.
     pub fn restored(tab: u8) -> Self {
         Self {
-            tab: usize::from(tab).min(2),
+            // Settings written before the tabs were reordered used Gallery,
+            // Outfits, Worn, Bases. Keep the stored number stable on disk.
+            tab: match tab {
+                0 => TAB_GALLERY,
+                1 => TAB_OUTFITS,
+                2 => TAB_WORN,
+                3 => TAB_BASES,
+                _ => TAB_WORN,
+            },
             ..Default::default()
+        }
+    }
+
+    /// The on-disk number remains in the order used before the visible tabs
+    /// changed, so existing preferences and future saves map consistently.
+    pub fn stored_tab(&self) -> u8 {
+        match self.tab {
+            TAB_GALLERY => 0,
+            TAB_BASES => 3,
+            TAB_OUTFITS => 1,
+            _ => 2,
         }
     }
     /// "Change outfit": the outfit view in use, the gallery or the list;
     /// from the worn tab, the gallery.
     pub fn open_outfits(&mut self) {
-        self.open(if self.tab < 2 { self.tab } else { 0 }, false);
+        self.open(
+            if matches!(self.tab, TAB_GALLERY | TAB_OUTFITS) {
+                self.tab
+            } else {
+                TAB_GALLERY
+            },
+            false,
+        );
     }
 
     /// Scrolls the gallery or the list to the current outfit and selects
@@ -206,8 +260,8 @@ impl AppearanceUi {
         let Some(id) = locatable(inv) else {
             return;
         };
-        if self.tab >= 2 {
-            self.tab = 0;
+        if !matches!(self.tab, TAB_GALLERY | TAB_OUTFITS) {
+            self.tab = TAB_GALLERY;
         }
         self.editing = false;
         self.adding = false;
@@ -404,6 +458,7 @@ impl AppearanceUi {
         agent: Uuid,
         worn: &HashSet<Uuid>,
     ) -> Vec<aurora_net::NetCommand> {
+        self.base_sets.refresh(inv);
         // a failed read is asked again (`Inventory::items_failed` counts them)
         for id in inv.take_item_retries() {
             self.requested_items.remove(&id);
@@ -451,6 +506,37 @@ impl AppearanceUi {
                     .filter(|id| !inv.items.contains_key(id) && !inv.missing_items.contains(id)),
             );
         }
+        let mut roots: Vec<_> = self.base_sets.data.folders.iter().copied().collect();
+        roots.extend(self.outfit_selection.focus);
+        if let Some(active) = &self.base_sets.data.active {
+            roots.extend(active.folders());
+        }
+        if self
+            .base_prepared
+            .as_ref()
+            .is_none_or(|prepared| prepared.generation != inv.generation || prepared.roots != roots)
+        {
+            let (folders, missing) = crate::world::base_outfits::graph(inv, &roots);
+            self.base_prepared = Some(BasePrepared {
+                generation: inv.generation,
+                roots,
+                folders,
+                missing,
+            });
+        }
+        let prepared = self.base_prepared.as_ref().expect("built above");
+        for id in &prepared.folders {
+            if inv.queue.len() >= 16 {
+                break;
+            }
+            inv.request(*id);
+        }
+        missing.extend(
+            prepared
+                .missing
+                .iter()
+                .filter(|id| !inv.items.contains_key(id) && !inv.missing_items.contains(id)),
+        );
         self.filter_requests(model::fetch_items(missing, agent))
     }
 
@@ -465,9 +551,10 @@ impl AppearanceUi {
     /// group's open state changed. A filter shows every group open.
     fn shown(&mut self, inv: &crate::world::inventory::Inventory) -> &Shown {
         use crate::world::outfit_folders::{Order, tree};
+        self.base_sets.refresh(inv);
         // the gallery shows a group's section before its subgroups'
-        let order = if self.tab == 0 { Order::Gallery } else { Order::List };
-        let showcase = self.showcase && self.tab == 0;
+        let order = if self.tab == TAB_GALLERY { Order::Gallery } else { Order::List };
+        let showcase = self.showcase && self.tab == TAB_GALLERY;
         let fresh = self.shown.as_ref().is_some_and(|shown| {
             shown.generation == inv.generation
                 && shown.search == self.search
@@ -475,10 +562,20 @@ impl AppearanceUi {
                 && shown.closed == self.closed_version
                 && shown.order == order
                 && shown.showcase == showcase
+                && shown.base_tab == (self.tab == TAB_BASES)
+                && shown.base_ids == self.base_sets.data.folders
         });
         if !fresh {
             let needle = self.search.trim().to_lowercase();
-            let tree = tree(inv, &needle, self.reverse_sort, order);
+            let mut tree = tree(inv, &needle, self.reverse_sort, order);
+            if self.tab == TAB_BASES {
+                tree.retain(|entry| !entry.group && self.base_sets.data.folders.contains(&entry.id));
+                for entry in &mut tree {
+                    entry.depth = 0;
+                }
+            } else if self.tab == TAB_OUTFITS {
+                tree.retain(|entry| entry.group || !self.base_sets.data.folders.contains(&entry.id));
+            }
             let total = tree.iter().filter(|e| !e.group).count();
             let mut entries = Vec::with_capacity(tree.len());
             let mut hidden_below = None;
@@ -499,6 +596,8 @@ impl AppearanceUi {
                 closed: self.closed_version,
                 order,
                 showcase,
+                base_tab: self.tab == TAB_BASES,
+                base_ids: self.base_sets.data.folders.clone(),
                 entries,
                 outfits,
                 total,
@@ -966,11 +1065,23 @@ fn gallery(
                         let current = current == Some(*id);
                         let color = if current { p.violet_light } else { p.ink };
                         let font_id = egui::FontId::proportional(12.0);
-                        let galley = outfit_label(ui, &folder.info.name, current, font_id.clone(), color, width);
+                        let folder_name = crate::world::base_outfits::display_name(&world.inventory, *id).unwrap_or(&folder.info.name);
+                        let label = crate::world::base_outfits::linked_names(&world.inventory, *id, &st.base_sets.data.folders)
+                            .map_or_else(
+                                || folder_name.to_owned(),
+                                |name| {
+                                    format!(
+                                        "{} · {}",
+                                        folder_name,
+                                        aurora_i18n::tr!("base-outfits-linked", name = name.as_str())
+                                    )
+                                },
+                            );
+                        let galley = outfit_label(ui, &label, current, font_id.clone(), color, width);
                         let response = ui.add(egui::Label::new(galley.clone()));
                         if current && ui.is_rect_visible(response.rect) {
                             if let Some(offset) = widgets::faux_bold_offset(ui) {
-                                let name = egui::WidgetText::from(RichText::new(&folder.info.name).font(font_id).color(color)).into_galley(
+                                let name = egui::WidgetText::from(RichText::new(&label).font(font_id).color(color)).into_galley(
                                     ui,
                                     Some(egui::TextWrapMode::Truncate),
                                     galley.size().x,
@@ -1130,7 +1241,10 @@ fn outfit_list(
                 let font_id = egui::TextStyle::Button.resolve(ui.style());
                 // the header's own room for its title: past the caret, 4 px short of the end
                 let width = ui.available_width() - ui.spacing().indent - 4.0;
-                let galley = outfit_label(ui, &f.info.name, is_current, font_id.clone(), p.ink, width);
+                let label = crate::world::base_outfits::display_name(&world.inventory, *id)
+                    .unwrap_or(&f.info.name)
+                    .to_owned();
+                let galley = outfit_label(ui, &label, is_current, font_id.clone(), p.ink, width);
                 let reveal = st.reveal_outfit == Some(*id);
                 let default_open = st.outfit_selection.focus == Some(*id);
                 let forced = reveal.then_some(true).or_else(|| {
@@ -1152,6 +1266,7 @@ fn outfit_list(
                     ui.horizontal_wrapped(|ui| {
                         use widgets::{ActionKind, action_button};
                         let size = Vec2::new(0.0, 24.0);
+                        let is_base = st.base_sets.data.folders.contains(id);
                         for (icon, label, kind, append) in [
                             (
                                 "shirt-filled",
@@ -1161,8 +1276,18 @@ fn outfit_list(
                             ),
                             ("plus", aurora_i18n::tr!("common-add"), ActionKind::Flat, true),
                         ] {
+                            if (st.tab == TAB_BASES || is_base) && append {
+                                continue;
+                            }
+                            let label = if st.tab == TAB_BASES || is_base {
+                                aurora_i18n::tr!("base-outfits-wear")
+                            } else {
+                                label
+                            };
                             if action_button(ui, p, icon, label, kind, size).clicked() {
-                                actions.push(if st.outfit_selection.contains(*id) {
+                                actions.push(if st.tab == TAB_BASES || is_base {
+                                    Action::WearBase(*id)
+                                } else if st.outfit_selection.contains(*id) {
                                     st.wear_selection(outfits, append)
                                 } else {
                                     Action::Wear(*id, append)
@@ -1674,6 +1799,7 @@ pub fn show(
     images: &HashMap<Uuid, egui::TextureHandle>,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
+    st.base_sets.refresh(&world.inventory);
     let mut floater = widgets::Floater::new(
         "appearance",
         aurora_i18n::tr!("common-appearance"),
@@ -1685,10 +1811,10 @@ pub fn show(
     if *open {
         st.read_pictures(world);
     }
-    if *open && st.showcase && !st.editing && st.tab == 0 {
+    if *open && st.showcase && !st.editing && st.tab == TAB_GALLERY {
         showcase::widen_once(ctx);
     }
-    if *open && !st.editing && st.tab == 2 {
+    if *open && !st.editing && st.tab == TAB_WORN {
         let temporary = world.temp_attachments();
         world.request_temp_attachment_names(&temporary, std::time::Instant::now());
     }
@@ -1698,15 +1824,19 @@ pub fn show(
         let base = model::base(inv);
         let name = base
             .and_then(|id| inv.folders.get(&id))
-            .map(|f| f.info.name.clone())
+            .map(|f| {
+                crate::world::base_outfits::display_name(inv, f.info.id)
+                    .unwrap_or(&f.info.name)
+                    .to_owned()
+            })
             .unwrap_or_else(|| aurora_i18n::tr!("common-current-outfit").into());
-        let dirty = model::dirty(inv);
+        let dirty = crate::world::base_outfits::dirty(inv, st.base_sets.data.active.as_ref());
         let count = world.worn_attachment_items().len();
         if widgets::search_cleared(ui)
             && let Some(id) = st.outfit_selection.focus
         {
             st.open_groups_of(inv, id);
-            if !st.editing && st.tab == 1 {
+            if !st.editing && st.tab == TAB_OUTFITS {
                 st.reveal_outfit = Some(id);
             }
         }
@@ -1758,6 +1888,17 @@ pub fn show(
                         .color(if dirty { p.warn } else { p.muted }),
                     );
                     ui.add(egui::Label::new(RichText::new(&name).size(16.0).strong().color(p.ink)).truncate());
+                    if let Some(base_names) = st.base_sets.data.active.as_ref().map(|base| {
+                        base.folders()
+                            .into_iter()
+                            .filter_map(|id| crate::world::base_outfits::display_name(inv, id))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }) {
+                        let label = aurora_i18n::tr!("base-outfits-active", name = base_names.as_str());
+                        ui.add(egui::Label::new(RichText::new(&label).size(11.0).color(p.muted)).truncate())
+                            .on_hover_text(label);
+                    }
                 });
                 // right to left: edit outfit, edit shape, then locate next to the name
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1823,6 +1964,7 @@ pub fn show(
                 &mut st.tab,
                 &[
                     (aurora_i18n::tr!("ui-appearance-outfit-gallery"), true),
+                    (aurora_i18n::tr!("base-outfits-tab"), true),
                     (aurora_i18n::tr!("ui-appearance-outfits"), true),
                     (&worn, true),
                 ],
@@ -1845,11 +1987,11 @@ pub fn show(
         // message) made the window grow to fit them, the list take the new
         // room, and the window grow again at every frame.
         let below_id = ui.scope_id().with("appearance_below_list");
-        let estimate = if st.editing || st.tab == 2 { 130.0 } else { 154.0 };
+        let estimate = if st.editing || st.tab == TAB_WORN { 130.0 } else { 154.0 };
         let reserved = ui.ctx().data(|d| d.get_temp::<f32>(below_id)).unwrap_or(estimate);
         let list_top = ui.cursor().top();
         let height = (ui.available_height() - reserved).max(100.0);
-        let showcase = st.showcase && !st.editing && st.tab == 0;
+        let showcase = st.showcase && !st.editing && st.tab == TAB_GALLERY;
         if showcase {
             // the framed list's height: its own and its margins
             showcase::show(ui, p, world, st, &entries, &outfits, base, &mut actions, images, height + 16.0);
@@ -1875,15 +2017,24 @@ pub fn show(
                                     worn_list(ui, p, world, st, &mut actions, true);
                                 } else {
                                     match st.tab {
-                                        0 => gallery(ui, p, world, st, &entries, &outfits, base, &mut actions, images, list_width),
-                                        1 => outfit_list(ui, p, world, st, &entries, &outfits, base, &mut actions),
+                                        TAB_GALLERY => {
+                                            gallery(ui, p, world, st, &entries, &outfits, base, &mut actions, images, list_width)
+                                        }
+                                        TAB_BASES | TAB_OUTFITS => {
+                                            let current = if st.tab == TAB_BASES {
+                                                st.base_sets.data.active.as_ref().map(|base| base.folder)
+                                            } else {
+                                                base
+                                            };
+                                            outfit_list(ui, p, world, st, &entries, &outfits, current, &mut actions)
+                                        }
                                         _ => {
                                             ui.label(RichText::new(aurora_i18n::tr!("ui-appearance-items-to-wear")).color(p.muted));
                                             worn_list(ui, p, world, st, &mut actions, false);
                                         }
                                     }
                                 }
-                                if !st.editing && st.tab < 2 && entries.is_empty() {
+                                if !st.editing && st.tab != TAB_WORN && entries.is_empty() {
                                     ui.label(RichText::new(aurora_i18n::tr!("ui-appearance-no-outfits-to-display")).color(p.muted));
                                 }
                             });
@@ -1891,7 +2042,7 @@ pub fn show(
                 });
         }
         st.clipboard_shortcuts(ui, &world.inventory, &outfits);
-        if !st.editing && st.tab == 2 {
+        if !st.editing && st.tab == TAB_WORN {
             temporary_attachments(ui, p, world, st);
         }
         if st.editing {
@@ -1926,7 +2077,7 @@ pub fn show(
             });
         }
         // the showcase's preview stands for the selection's card
-        if !st.editing && st.tab < 2 && !(showcase && showcase::previews(ui.available_width())) {
+        if !st.editing && matches!(st.tab, TAB_GALLERY | TAB_OUTFITS) && !(showcase && showcase::previews(ui.available_width())) {
             widgets::surface(ui, p, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -1939,7 +2090,9 @@ pub fn show(
                         let name = if selection.len() > 1 {
                             &multiple
                         } else {
-                            selected.map_or(aurora_i18n::tr!("workspace-outfit-selection"), |f| f.info.name.as_str())
+                            selected.map_or(aurora_i18n::tr!("workspace-outfit-selection"), |f| {
+                                crate::world::base_outfits::display_name(&world.inventory, f.info.id).unwrap_or(&f.info.name)
+                            })
                         };
                         ui.add(egui::Label::new(RichText::new(name).size(13.0).strong().color(p.ink)).truncate())
                             .on_hover_text(name);
@@ -1960,7 +2113,7 @@ pub fn show(
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             icon_menu(ui, p, "settings-filled", aurora_i18n::tr!("ui-appearance-outfit-options"), |ui| {
-                if !st.editing && st.tab == 0 {
+                if !st.editing && st.tab == TAB_GALLERY {
                     menu::toggle(
                         ui,
                         p,
@@ -1970,8 +2123,20 @@ pub fn show(
                     );
                     menu::separator(ui, p);
                 }
-                if !st.editing && st.tab < 2 {
+                if !st.editing && matches!(st.tab, TAB_GALLERY | TAB_OUTFITS) {
                     folders::new_folder_item(ui, p, &world.inventory, st);
+                }
+                if !st.editing
+                    && st.tab == TAB_BASES
+                    && menu::item_if(
+                        ui,
+                        p,
+                        "minus",
+                        aurora_i18n::tr!("base-outfits-clear"),
+                        st.base_sets.data.active.is_some() && st.pending.is_none(),
+                    )
+                {
+                    actions.push(Action::ClearBase);
                 }
                 if menu::item(ui, p, "refresh", aurora_i18n::tr!("ui-appearance-refresh")) {
                     st.refresh(&mut world.inventory);
@@ -1981,7 +2146,7 @@ pub fn show(
                     actions.push(Action::Revert);
                 }
                 let selected = st.outfit_selection.ordered(&outfits);
-                let export = if !st.editing && st.tab < 2 && !selected.is_empty() {
+                let export = if !st.editing && matches!(st.tab, TAB_GALLERY | TAB_OUTFITS) && !selected.is_empty() {
                     (selected.len() == 1).then(|| selected[0])
                 } else {
                     model::cof(&world.inventory)
@@ -2011,7 +2176,7 @@ pub fn show(
                     actions.push(Action::PickJson);
                 }
             });
-            if !st.editing && st.tab < 2 {
+            if !st.editing && matches!(st.tab, TAB_GALLERY | TAB_OUTFITS) {
                 ui.label(
                     RichText::new(aurora_i18n::tr!("outfit-count", count = total))
                         .size(11.0)
@@ -2044,7 +2209,10 @@ pub fn show(
             let available = st.pending.is_none() && model::cof(&world.inventory).is_some_and(|id| model::complete(&world.inventory, id));
             use widgets::{ActionKind, action_button, action_button_if};
             let size = Vec2::new(0.0, 26.0);
-            let (save, can_save) = (aurora_i18n::tr!("common-save"), available && base.is_some() && dirty);
+            let (save, can_save) = (
+                aurora_i18n::tr!("common-save"),
+                available && base.is_some() && dirty && base.is_none_or(|id| !st.base_sets.data.folders.contains(&id)),
+            );
             if action_button_if(ui, p, "device-floppy-filled", save, ActionKind::Flat, size, can_save).clicked() {
                 actions.push(Action::Save(None));
             }
@@ -2060,7 +2228,7 @@ pub fn show(
                     st.editing = false;
                     st.adding = false;
                 }
-            } else if st.tab < 2 {
+            } else if matches!(st.tab, TAB_GALLERY | TAB_OUTFITS) {
                 let selection = st.outfit_selection.ordered(&outfits);
                 // getCanAddToCOF / getCanReplaceCOF: no outfit under an RLVa
                 // add lock on its folder.
@@ -2244,6 +2412,12 @@ pub fn demo_showcase(inv: &mut crate::world::inventory::Inventory, st: &mut Appe
     st.outfit_selection.single(Uuid::from_u128(703));
 }
 
+/// Opens the base collection for the dedicated offline base-outfit scenario.
+pub fn demo_base_outfits(st: &mut AppearanceUi) {
+    st.showcase_state.filter = showcase::Filter::Bases;
+    st.outfit_selection.single(Uuid::from_u128(702));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2320,22 +2494,76 @@ mod tests {
         use crate::settings::Settings;
         let old: Settings = serde_json::from_str("{}").expect("old settings");
         assert_eq!(AppearanceUi::restored(old.appearance_tab).tab, 0, "the gallery by default");
-        for tab in 0..3usize {
+        for tab in [TAB_GALLERY, TAB_BASES, TAB_OUTFITS, TAB_WORN] {
+            let mut appearance = AppearanceUi::default();
+            appearance.open(tab, false);
             let settings = Settings {
-                appearance_tab: u8::try_from(tab).expect("tab"),
+                appearance_tab: appearance.stored_tab(),
                 ..Default::default()
             };
             let saved = serde_json::to_vec(&settings).expect("save settings");
             let restored: Settings = serde_json::from_slice(&saved).expect("restore settings");
             assert_eq!(AppearanceUi::restored(restored.appearance_tab).tab, tab);
         }
-        assert_eq!(AppearanceUi::restored(9).tab, 2, "an unknown tab falls back to the last one");
+        assert_eq!(AppearanceUi::restored(1).tab, TAB_OUTFITS, "the former outfit tab stays selected");
+        assert_eq!(AppearanceUi::restored(2).tab, TAB_WORN, "the former worn tab stays selected");
+        assert_eq!(AppearanceUi::restored(3).tab, TAB_BASES, "the former base tab stays selected");
+        assert_eq!(AppearanceUi::restored(9).tab, TAB_WORN, "an unknown tab falls back to the last one");
+    }
+
+    #[test]
+    fn appearance_tabs_are_gallery_bases_outfits_then_worn() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::default().apply(&ctx, 1.0);
+        let _icons = icons::Icons::load(&ctx, None);
+        let mut world = wardrobe(0);
+        let mut st = AppearanceUi::default();
+        for _ in 0..4 {
+            draw(&ctx, &mut world, &mut st, None);
+        }
+        let worn = aurora_i18n::tr!(
+            "ui-appearance-worn-38-attachments",
+            count = format!("{}", world.worn_attachment_items().len())
+        );
+        let shapes = draw_output(
+            &ctx,
+            &mut world,
+            &mut st,
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1600.0, 900.0))),
+                ..Default::default()
+            },
+        )
+        .1;
+        let labels = [
+            aurora_i18n::tr!("ui-appearance-outfit-gallery"),
+            aurora_i18n::tr!("base-outfits-tab"),
+            aurora_i18n::tr!("ui-appearance-outfits"),
+            &worn,
+        ];
+        let positions: Vec<_> = labels
+            .iter()
+            .map(|label| {
+                shapes
+                    .iter()
+                    .find_map(|shape| text_position(&shape.shape, label))
+                    .unwrap_or_else(|| panic!("missing Appearance tab: {label}"))
+                    .x
+            })
+            .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "tab order: {positions:?}");
     }
 
     #[test]
     fn change_outfit_keeps_the_outfit_view_in_use() {
-        for (from, to) in [(0, 0), (1, 1), (2, 0)] {
-            let mut st = AppearanceUi::restored(from);
+        for (from, to) in [
+            (TAB_GALLERY, TAB_GALLERY),
+            (TAB_OUTFITS, TAB_OUTFITS),
+            (TAB_BASES, TAB_GALLERY),
+            (TAB_WORN, TAB_GALLERY),
+        ] {
+            let mut st = AppearanceUi::default();
+            st.open(from, false);
             st.editing = true;
             st.open_outfits();
             assert_eq!((st.tab, st.editing), (to, false), "from tab {from}");
@@ -2639,12 +2867,16 @@ mod tests {
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .expect("outfit row/tile")
             .1;
-        pos + if st.tab == 0 { egui::vec2(10.0, -50.0) } else { Vec2::ZERO }
+        pos + if st.tab == TAB_GALLERY {
+            egui::vec2(10.0, -50.0)
+        } else {
+            Vec2::ZERO
+        }
     }
 
     #[test]
     fn appearance_multiselection_pointer_events_and_bulk_buttons_in_both_views() {
-        for tab in [0, 1] {
+        for tab in [TAB_GALLERY, TAB_OUTFITS] {
             let ctx = egui::Context::default();
             crate::theme::Theme::default().apply(&ctx, 1.0);
             let _icons = icons::Icons::load(&ctx, None);
@@ -3330,7 +3562,7 @@ mod tests {
         let temporary = world.temp_attachments();
         assert_eq!(temporary.len(), 1);
         let mut st = AppearanceUi::default();
-        st.open(2, false);
+        st.open(TAB_WORN, false);
         for _ in 0..4 {
             draw(&ctx, &mut world, &mut st, None);
         }
@@ -3469,7 +3701,7 @@ mod tests {
             .collect();
         assert_eq!(worn.len(), 2, "the demo wears two removable items");
         let mut st = AppearanceUi::default();
-        st.open(2, false);
+        st.open(TAB_WORN, false);
         for _ in 0..4 {
             draw(&ctx, &mut world, &mut st, None);
         }
@@ -3601,7 +3833,7 @@ mod tests {
         );
 
         // The worn tab copies the Current Outfit's links and pastes there.
-        st.open(2, false);
+        st.open(TAB_WORN, false);
         for _ in 0..4 {
             draw(&ctx, &mut world, &mut st, None);
         }
@@ -3648,7 +3880,7 @@ mod tests {
         let mut world = World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
         model::seed_demo(&mut world.inventory, Uuid::from_u128(1));
         let mut st = AppearanceUi::default();
-        st.open(1, false);
+        st.open(TAB_OUTFITS, false);
         // Establish persisted closed headers before returning to the gallery.
         for _ in 0..4 {
             draw(&ctx, &mut world, &mut st, None);
@@ -3683,7 +3915,7 @@ mod tests {
             }
         }
         assert!(actions.is_empty(), "double-click must not dispatch Wear: {actions:?}");
-        assert_eq!(st.tab, 1);
+        assert_eq!(st.tab, TAB_OUTFITS);
         assert_eq!(st.outfit_selection.focus, Some(Uuid::from_u128(703)));
         for _ in 0..4 {
             draw(&ctx, &mut world, &mut st, None);
@@ -3704,7 +3936,7 @@ mod tests {
         crate::world::outfit_folders::seed_demo(&mut world.inventory, Uuid::from_u128(1));
         let (beach, night, club) = (Uuid::from_u128(741), Uuid::from_u128(742), Uuid::from_u128(740));
         let mut st = AppearanceUi {
-            tab: 1,
+            tab: TAB_OUTFITS,
             ..Default::default()
         };
         assert_eq!(st.shown_outfits(&world.inventory).len(), 8);
@@ -3879,7 +4111,12 @@ mod tests {
         world.inventory.generation += 1;
         assert_eq!(locatable(&world.inventory), Some(current));
         // last, a window opened on the outfit to locate (the demo's `locate`)
-        for (tab, filter, shown_tab, opening) in [(0, "", 0, false), (1, "beach", 1, false), (2, "", 0, false), (0, "", 0, true)] {
+        for (tab, filter, shown_tab, opening) in [
+            (TAB_GALLERY, "", TAB_GALLERY, false),
+            (TAB_OUTFITS, "beach", TAB_OUTFITS, false),
+            (TAB_WORN, "", TAB_GALLERY, false),
+            (TAB_GALLERY, "", TAB_GALLERY, true),
+        ] {
             let ctx = if opening { egui::Context::default() } else { ctx.clone() };
             crate::theme::Theme::default().apply(&ctx, 1.0);
             let _icons = icons::Icons::load(&ctx, None);
@@ -4078,7 +4315,7 @@ mod tests {
         let palette = crate::theme::Theme::default().palette();
         let world = wardrobe(300);
         let mut st = AppearanceUi {
-            tab: 1,
+            tab: TAB_OUTFITS,
             ..Default::default()
         };
         let outfits = st.shown_outfits(&world.inventory);
@@ -4210,7 +4447,7 @@ mod tests {
             let name = world.inventory.items[&id].name.clone();
             let before = world.inventory.generation;
             let mut st = AppearanceUi::default();
-            st.open(2, false);
+            st.open(TAB_WORN, false);
             for _ in 0..5 {
                 draw(&ctx, &mut world, &mut st, None);
             }
@@ -4243,7 +4480,7 @@ mod tests {
         model::seed_demo(&mut world.inventory, Uuid::from_u128(1));
         let names: Vec<_> = [714, 715].map(|id| world.inventory.items[&Uuid::from_u128(id)].name.clone()).into();
         let mut st = AppearanceUi::default();
-        st.open(2, false);
+        st.open(TAB_WORN, false);
         for _ in 0..5 {
             draw(&ctx, &mut world, &mut st, None);
         }
@@ -4353,7 +4590,7 @@ mod tests {
         let target = Uuid::from_u128(714);
         let name = world.inventory.items[&target].name.clone();
         let mut st = AppearanceUi::default();
-        st.open(2, false);
+        st.open(TAB_WORN, false);
         for _ in 0..5 {
             draw(&ctx, &mut world, &mut st, None);
         }

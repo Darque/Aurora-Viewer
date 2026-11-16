@@ -66,6 +66,19 @@ pub enum Action {
     /// The batch portraits' window, over these outfits (the showcase's,
     /// in its order).
     OutfitBatch(Vec<Uuid>),
+    /// Add or remove the leading-period base marker on a saved outfit.
+    MarkBase(Uuid, bool),
+    /// Swap the reusable base while keeping the clothing outfit.
+    WearBase(Uuid),
+    /// Restore or compose several reusable bases while keeping clothing.
+    WearBases(Vec<Uuid>),
+    /// Stop tracking the active base and remove its exclusive items.
+    ClearBase,
+    /// Set or clear a saved outfit's ordinary folder link to a base.
+    SetBaseLink {
+        outfit: Uuid,
+        base: Option<Uuid>,
+    },
     Wear(Uuid, bool),
     WearOutfits {
         folders: Vec<Uuid>,
@@ -980,7 +993,12 @@ pub fn plan(inv: &Inventory, action: Action, worn: &HashMap<Uuid, u8>) -> Result
             }
             change.links = current;
         }
-        Action::ShowOriginal(_)
+        Action::MarkBase(..)
+        | Action::WearBase(_)
+        | Action::WearBases(_)
+        | Action::ClearBase
+        | Action::SetBaseLink { .. }
+        | Action::ShowOriginal(_)
         | Action::Favorite(_)
         | Action::OutfitImage(_)
         | Action::OutfitSnapshot(_)
@@ -1106,7 +1124,7 @@ pub fn coalesced(it: &InvItem) -> bool {
 /// leaves nothing behind; here the COF is written first, and a link left to a
 /// coalesced object would be asked for again at every outfit sync and login,
 /// and count toward the 38 attachments (#1668). A rewrite drops such links.
-fn drop_coalesced(inv: &Inventory, links: &mut Vec<OutfitLink>) {
+pub(super) fn drop_coalesced(inv: &Inventory, links: &mut Vec<OutfitLink>) {
     links.retain(|l| l.folder || !inv.items.get(&l.target).is_some_and(coalesced));
 }
 
@@ -1126,7 +1144,7 @@ pub fn layer_rank(link: &OutfitLink, kind: u32) -> (u32, String) {
     (order, link.name.to_lowercase())
 }
 
-fn normalize_layers(inv: &Inventory, links: &mut [OutfitLink]) {
+pub(super) fn normalize_layers(inv: &Inventory, links: &mut [OutfitLink]) {
     for kind in 4..=16 {
         let mut indices: Vec<_> = links
             .iter()

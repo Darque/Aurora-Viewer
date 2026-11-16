@@ -235,36 +235,43 @@ fn menu_body(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceU
             single
         }
     };
-    if menu::item_if(
-        ui,
-        p,
-        "shirt-filled",
-        aurora_i18n::tr!("ui-appearance-gallery-replace-your-outfit"),
-        enabled(rules.replace, |rule| rule.replace),
-    ) {
-        actions.push(st.wear_selection(&outfits, false));
-    }
-    if menu::item_if(
-        ui,
-        p,
-        "plus",
-        aurora_i18n::tr!("ui-appearance-gallery-add-to-your-outfit"),
-        enabled(rules.add, |rule| rule.add),
-    ) {
-        actions.push(st.wear_selection(&outfits, true));
-    }
-    if menu::item_if(
-        ui,
-        p,
-        "minus",
-        aurora_i18n::tr!("ui-appearance-gallery-take-off"),
-        enabled(rules.remove, |rule| rule.remove),
-    ) {
-        actions.push(if multiple {
-            Action::RemoveOutfits(selection.clone())
-        } else {
-            Action::RemoveOutfit(id)
-        });
+    let is_base = st.base_sets.data.folders.contains(&id);
+    if is_base {
+        if menu::item_if(ui, p, "shirt-filled", aurora_i18n::tr!("base-outfits-wear"), ready && !multiple) {
+            actions.push(Action::WearBase(id));
+        }
+    } else {
+        if menu::item_if(
+            ui,
+            p,
+            "shirt-filled",
+            aurora_i18n::tr!("ui-appearance-gallery-replace-your-outfit"),
+            enabled(rules.replace, |rule| rule.replace),
+        ) {
+            actions.push(st.wear_selection(&outfits, false));
+        }
+        if menu::item_if(
+            ui,
+            p,
+            "plus",
+            aurora_i18n::tr!("ui-appearance-gallery-add-to-your-outfit"),
+            enabled(rules.add, |rule| rule.add),
+        ) {
+            actions.push(st.wear_selection(&outfits, true));
+        }
+        if menu::item_if(
+            ui,
+            p,
+            "minus",
+            aurora_i18n::tr!("ui-appearance-gallery-take-off"),
+            enabled(rules.remove, |rule| rule.remove),
+        ) {
+            actions.push(if multiple {
+                Action::RemoveOutfits(selection.clone())
+            } else {
+                Action::RemoveOutfit(id)
+            });
+        }
     }
     if multiple {
         if ready {
@@ -272,6 +279,54 @@ fn menu_body(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceU
             super::folders::move_menu(ui, p, inv, st, &selection, actions);
         }
         return;
+    }
+    menu::separator(ui, p);
+    let base_ready = rules.folder;
+    let active = st.base_sets.data.active.as_ref().is_some_and(|base| base.contains(id));
+    let referenced = is_base && st.base_sets.data.referenced.contains(&id);
+    if menu::item_if(
+        ui,
+        p,
+        "folder-filled",
+        if is_base {
+            aurora_i18n::tr!("base-outfits-move-to-outfits")
+        } else {
+            aurora_i18n::tr!("base-outfits-move-to-bases")
+        },
+        base_ready && !active && !referenced,
+    ) {
+        actions.push(Action::MarkBase(id, !is_base));
+    }
+    if !is_base {
+        menu::submenu(ui, p, "folder-filled", aurora_i18n::tr!("base-outfits-choose"), base_ready, |ui| {
+            let linked = crate::world::base_outfits::linked_bases(inv, id, &st.base_sets.data.folders);
+            if menu::check(
+                ui,
+                p,
+                "x",
+                aurora_i18n::tr!("base-outfits-none"),
+                linked.is_empty(),
+                !linked.is_empty(),
+            ) {
+                actions.push(Action::SetBaseLink { outfit: id, base: None });
+            }
+            let mut ids = st.base_sets.data.folders.clone();
+            ids.extend(linked.iter().copied());
+            let mut bases: Vec<_> = ids
+                .iter()
+                .filter_map(|id| crate::world::base_outfits::display_name(inv, *id).map(|name| (name.to_owned(), *id)))
+                .collect();
+            bases.sort();
+            for (name, target) in bases {
+                let selected = linked.contains(&target);
+                if menu::check(ui, p, "folder-filled", &name, selected, true) {
+                    actions.push(Action::SetBaseLink {
+                        outfit: id,
+                        base: Some(target),
+                    });
+                }
+            }
+        });
     }
     menu::separator(ui, p);
     // LLOutfitContextMenu's Outfit.Thumbnail
@@ -320,7 +375,12 @@ fn menu_body(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceU
         aurora_i18n::tr!("ui-appearance-gallery-rename-your-outfit"),
         rules.folder,
     ) {
-        st.gallery.rename = Some((id, folder.info.name.clone()));
+        st.gallery.rename = Some((
+            id,
+            crate::world::base_outfits::display_name(inv, id)
+                .unwrap_or(&folder.info.name)
+                .to_owned(),
+        ));
         st.gallery.focus = true;
     }
     if menu::item_if(
@@ -453,7 +513,13 @@ pub(super) fn dialogs(ctx: &egui::Context, p: &Palette, world: &mut World, st: &
                 if action_button_if(ui, p, "check", aurora_i18n::tr!("common-ok"), ActionKind::Primary, size, valid).clicked()
                     || (valid && crate::ui::widgets::enter_pressed(ui))
                 {
-                    actions.push(Action::Category(id, Update::Rename(name.trim().into())));
+                    let name = name.trim();
+                    let name = if crate::world::base_outfits::is_base_folder(&world.inventory, id) {
+                        format!(".{}", name.trim_start_matches('.'))
+                    } else {
+                        name.to_owned()
+                    };
+                    actions.push(Action::Category(id, Update::Rename(name)));
                     close = true;
                 }
                 if action_button(ui, p, "x", aurora_i18n::tr!("common-cancel"), ActionKind::Flat, size).clicked() {
@@ -465,7 +531,7 @@ pub(super) fn dialogs(ctx: &egui::Context, p: &Palette, world: &mut World, st: &
     }
     if let Some((id, delete)) = st.gallery.confirm {
         let mut close = false;
-        let name = world.inventory.folders.get(&id).map(|f| f.info.name.as_str()).unwrap_or("");
+        let name = crate::world::base_outfits::display_name(&world.inventory, id).unwrap_or("");
         let response = crate::ui::widgets::Modal::new(egui::Id::unique("outfit_confirm")).show(ctx, |ui| {
             ui.set_width(350.0);
             ui.label(
@@ -622,7 +688,7 @@ mod tests {
         let shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
         let pos = shapes.iter().find_map(|s| text_position(&s.shape, &label)).expect("outfit tile") + egui::vec2(10.0, -50.0);
         assert!(click(&ctx, &mut world, &mut st, pos, PointerButton::Secondary).is_empty());
-        assert_eq!(st.outfit_selection.focus, Some(Uuid::from_u128(703)));
+        assert_eq!(st.outfit_selection.focus, Some(Uuid::from_u128(704)));
         let mut shapes = Vec::new();
         for _ in 0..4 {
             shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
@@ -814,7 +880,7 @@ mod tests {
 
     #[test]
     fn outfit_list_clipboard_action_works_in_both_views_before_delete_and_on_the_current_outfit() {
-        for tab in [0, 1] {
+        for tab in [super::super::TAB_GALLERY, super::super::TAB_OUTFITS] {
             for id in [704, 705, 702] {
                 let ctx = egui::Context::default();
                 crate::theme::Theme::default().apply(&ctx, 1.0);
@@ -832,7 +898,7 @@ mod tests {
                 }
                 let shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
                 let mut pos = shapes.iter().rev().find_map(|s| text_position(&s.shape, &label)).expect("outfit");
-                if tab == 0 {
+                if tab == super::super::TAB_GALLERY {
                     pos += egui::vec2(10.0, -50.0);
                 }
                 click(&ctx, &mut world, &mut st, pos, PointerButton::Secondary);
@@ -912,7 +978,7 @@ mod tests {
             let mut world = World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
             model::seed_demo(&mut world.inventory, Uuid::from_u128(1));
             let mut st = AppearanceUi::default();
-            st.open(1, false);
+            st.open(super::super::TAB_OUTFITS, false);
             for _ in 0..4 {
                 frame(&ctx, &mut world, &mut st, vec![]);
             }
@@ -957,5 +1023,89 @@ mod tests {
                 "{actions:?}"
             );
         }
+    }
+
+    #[test]
+    fn outfit_and_base_menus_offer_the_matching_move_and_save_actions() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::default().apply(&ctx, 1.0);
+        let _icons = crate::ui::icons::Icons::load(&ctx, None);
+        let mut world = World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
+        model::seed_demo(&mut world.inventory, Uuid::from_u128(1));
+        crate::world::base_outfits::seed_demo(&mut world.inventory, Uuid::from_u128(1));
+        let mut st = AppearanceUi::default();
+
+        st.open(super::super::TAB_OUTFITS, false);
+        st.search = "Clothes with base".into();
+        for _ in 0..4 {
+            frame(&ctx, &mut world, &mut st, vec![]);
+        }
+        let shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
+        assert!(
+            shapes
+                .iter()
+                .any(|shape| text_position(&shape.shape, "Clothes with base").is_some()),
+            "the outfit row keeps its name"
+        );
+        assert!(
+            !shapes.iter().any(|shape| text_position(&shape.shape, "Bases: Base B").is_some()),
+            "linked bases are not appended to the Outfits tab"
+        );
+        let pos = shapes
+            .iter()
+            .rev()
+            .find_map(|shape| text_position(&shape.shape, "Clothes with base"))
+            .expect("linked outfit row");
+        assert!(click(&ctx, &mut world, &mut st, pos, PointerButton::Secondary).is_empty());
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
+        }
+        let move_to_base = aurora_i18n::tr!("base-outfits-move-to-bases");
+        let save = aurora_i18n::tr!("ui-appearance-gallery-save-to-this-outfit");
+        assert!(
+            shapes.iter().any(|shape| text_position(&shape.shape, move_to_base).is_some()),
+            "menu for {}: {:?}",
+            st.outfit_selection.focus.unwrap_or_default(),
+            shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        );
+        let save_pos = shapes
+            .iter()
+            .find_map(|shape| text_position(&shape.shape, save))
+            .expect("save to every clothing outfit");
+        click(&ctx, &mut world, &mut st, save_pos, PointerButton::Primary);
+        assert_eq!(st.gallery.confirm, Some((Uuid::from_u128(704), false)));
+
+        st.gallery.confirm = None;
+        st.open(super::super::TAB_BASES, false);
+        st.search = "Base B".into();
+        for _ in 0..4 {
+            frame(&ctx, &mut world, &mut st, vec![]);
+        }
+        let shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
+        let pos = shapes
+            .iter()
+            .rev()
+            .find_map(|shape| text_position(&shape.shape, "Base B"))
+            .expect("base outfit row without its marker");
+        click(&ctx, &mut world, &mut st, pos, PointerButton::Secondary);
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
+        }
+        let move_to_outfit = aurora_i18n::tr!("base-outfits-move-to-outfits");
+        assert!(shapes.iter().any(|shape| text_position(&shape.shape, move_to_outfit).is_some()));
+        let save_pos = shapes
+            .iter()
+            .find_map(|shape| text_position(&shape.shape, save))
+            .expect("save to every base outfit");
+        click(&ctx, &mut world, &mut st, save_pos, PointerButton::Primary);
+        assert_eq!(st.gallery.confirm, Some((Uuid::from_u128(703), false)));
     }
 }

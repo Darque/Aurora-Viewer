@@ -46,6 +46,7 @@ pub(super) const OPEN_HEIGHT: f32 = 720.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Filter {
     #[default]
+    Bases,
     All,
     Favorites,
     NoPicture,
@@ -106,7 +107,8 @@ impl State {
                 .iter()
                 .copied()
                 .filter(|id| match self.filter {
-                    Filter::All => true,
+                    Filter::Bases => crate::world::base_outfits::is_base_folder(inv, *id),
+                    Filter::All => !crate::world::base_outfits::is_base_folder(inv, *id),
                     Filter::Favorites => favorite(id),
                     Filter::NoPicture => !pictured.contains(id),
                     Filter::Folder(folder) => within(id, folder),
@@ -164,10 +166,13 @@ pub(super) fn widen_once(ctx: &egui::Context) {
 /// The name of a collection, for the rail and the narrow window's menu.
 fn filter_label(world: &World, filter: Filter) -> String {
     match filter {
+        Filter::Bases => aurora_i18n::tr!("base-outfits-all").into(),
         Filter::All => aurora_i18n::tr!("ui-appearance-showcase-all").into(),
         Filter::Favorites => aurora_i18n::tr!("common-favorites").into(),
         Filter::NoPicture => aurora_i18n::tr!("ui-appearance-showcase-no-picture").into(),
-        Filter::Folder(id) => world.inventory.folders.get(&id).map(|f| f.info.name.clone()).unwrap_or_default(),
+        Filter::Folder(id) => crate::world::base_outfits::display_name(&world.inventory, id)
+            .unwrap_or_else(|| world.inventory.folders.get(&id).map_or("", |f| f.info.name.as_str()))
+            .to_owned(),
     }
 }
 
@@ -219,21 +224,42 @@ pub(super) fn show(
         st.showcase_state = state;
         out
     };
+    let base_count = shown
+        .iter()
+        .filter(|id| crate::world::base_outfits::is_base_folder(&world.inventory, **id))
+        .count();
+    let outfit_count = shown.len().saturating_sub(base_count);
+    let current = if st.showcase_state.filter == Filter::Bases {
+        st.base_sets.data.active.as_ref().map(|base| base.folder)
+    } else {
+        current
+    };
     if let Some(rail) = rail {
         ui.painter().rect_filled(rail, radius, face);
         let mut r = ui.new_child(egui::UiBuilder::new().max_rect(rail.shrink(6.0)).id_salt("showcase_rail"));
         r.set_clip_rect(rail.intersect(ui.clip_rect()));
-        rail_column(&mut r, p, world, st, entries, shown.len(), favorites, no_picture, actions);
+        rail_column(
+            &mut r,
+            p,
+            world,
+            st,
+            entries,
+            outfit_count,
+            base_count,
+            favorites,
+            no_picture,
+            actions,
+        );
     }
     ui.painter().rect_filled(grid, radius, face);
     let mut g = ui.new_child(egui::UiBuilder::new().max_rect(grid.shrink(8.0)).id_salt("showcase_grid"));
     g.set_clip_rect(grid.intersect(ui.clip_rect()));
     super::clipboard::list_focus(&mut g, grid);
     if !wide {
-        collection_menu(&mut g, p, world, st, entries, shown.len(), favorites, no_picture);
+        collection_menu(&mut g, p, world, st, entries, outfit_count, base_count, favorites, no_picture);
         g.add_space(6.0);
     }
-    banner(&mut g, p, world, st, shown, no_picture, actions);
+    banner(&mut g, p, world, st, &outfits, no_picture, actions);
     egui::ScrollArea::vertical()
         .id_salt("appearance_showcase")
         .auto_shrink([false, false])
@@ -283,6 +309,7 @@ fn rail_column(
     st: &mut AppearanceUi,
     entries: &[Entry],
     total: usize,
+    base_count: usize,
     favorites: usize,
     no_picture: usize,
     actions: &mut Vec<Action>,
@@ -294,6 +321,7 @@ fn rail_column(
             ui.spacing_mut().item_spacing.y = 1.0;
             let filter = st.showcase_state.filter;
             for (choice, icon, tint, count) in [
+                (Filter::Bases, "shirt-filled", p.violet_light, base_count),
                 (Filter::All, "hanger-2-filled", p.muted, total),
                 (Filter::Favorites, "star-filled", p.amber, favorites),
                 (Filter::NoPicture, "photo-off", p.muted, no_picture),
@@ -350,11 +378,13 @@ fn collection_menu(
     st: &mut AppearanceUi,
     entries: &[Entry],
     total: usize,
+    base_count: usize,
     favorites: usize,
     no_picture: usize,
 ) {
     let filter = st.showcase_state.filter;
     let icon = match filter {
+        Filter::Bases => "shirt-filled",
         Filter::All => "hanger-2-filled",
         Filter::Favorites => "star-filled",
         Filter::NoPicture => "photo-off",
@@ -364,6 +394,7 @@ fn collection_menu(
     let response = widgets::action_menu_button(ui, p, icon, &label, false, 28.0);
     menu::dropdown(&response, p, egui::PopupCloseBehavior::CloseOnClick, |ui| {
         for (choice, icon, count) in [
+            (Filter::Bases, "shirt-filled", base_count),
             (Filter::All, "hanger-2-filled", total),
             (Filter::Favorites, "star-filled", favorites),
             (Filter::NoPicture, "photo-off", no_picture),
@@ -458,7 +489,7 @@ fn cards(
     // the fonts are read first: `fonts::semibold` locks the context too
     let (name, meta) = (name_font(ui), meta_font());
     let (name_h, meta_h) = ui.fonts_mut(|f| (f.row_height(&name), f.row_height(&meta)));
-    let text_h = 6.0 + name_h + 1.0 + meta_h;
+    let text_h = 6.0 + name_h + meta_h * 2.0 + 2.0;
     let pitch = card + text_h + ROW_GAP;
     let rows = outfits.len().div_ceil(columns);
     if rows == 0 {
@@ -602,7 +633,9 @@ fn card_ui(
     let text_top = picture.bottom() + 6.0;
     let width = rect.width();
     let mut job = egui::text::LayoutJob::single_section(
-        folder.info.name.clone(),
+        crate::world::base_outfits::display_name(inv, id)
+            .unwrap_or(&folder.info.name)
+            .to_owned(),
         egui::TextFormat::simple(name_font(ui), if current == Some(id) { p.violet_light } else { p.ink }),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(width);
@@ -610,17 +643,33 @@ fn card_ui(
     let name_h = name.size().y;
     ui.painter().galley(egui::pos2(rect.left(), text_top), name, p.ink);
     let count = st.showcase_state.item_count(inv, id);
+    let meta_y = text_top + name_h + 1.0;
+    let meta_h = ui.fonts_mut(|fonts| fonts.row_height(&meta_font()));
     let meta = ui
         .painter()
         .layout_no_wrap(aurora_i18n::tr!("workspace-outfit-items", count = count), meta_font(), p.muted);
-    ui.painter().galley(egui::pos2(rect.left(), text_top + name_h + 1.0), meta, p.muted);
-    response.on_hover_text(&folder.info.name);
+    ui.painter().galley(egui::pos2(rect.left(), meta_y), meta, p.muted);
+    let base_label = if crate::world::base_outfits::is_base_folder(inv, id) {
+        Some(aurora_i18n::tr!("base-outfits-base").to_string())
+    } else {
+        crate::world::base_outfits::linked_names(inv, id, &st.base_sets.data.folders)
+            .map(|name| aurora_i18n::tr!("base-outfits-linked", name = name.as_str()).to_string())
+    };
+    if let Some(label) = base_label {
+        let mut job = egui::text::LayoutJob::single_section(label, egui::TextFormat::simple(meta_font(), p.violet_light));
+        job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+        let galley = ui.painter().layout_job(job);
+        ui.painter()
+            .galley(egui::pos2(rect.left(), meta_y + meta_h), galley, p.violet_light);
+    }
+    response.on_hover_text(crate::world::base_outfits::display_name(inv, id).unwrap_or(&folder.info.name));
 }
 
 /// Wear, Add and Take a snapshot over the bottom of a hovered card, enabled
 /// as the outfit menu's entries are.
 fn hover_actions(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceUi, id: Uuid, picture: Rect, actions: &mut Vec<Action>) {
     let worn = items::worn_items(world);
+    let is_base = crate::world::base_outfits::is_base_folder(&world.inventory, id);
     let Some(mut rules) = gallery::menu_rules(&world.inventory, &worn, st.pending.is_some(), id) else {
         return;
     };
@@ -660,11 +709,12 @@ fn hover_actions(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut Appeara
         actions.push(Action::OutfitPortrait(id));
     }
     let add = aurora_i18n::tr!("ui-appearance-gallery-add-to-your-outfit");
-    if child
-        .add_enabled_ui(rules.add, |ui| widgets::glass_action_icon(ui, p, "plus", add, side, p.ink))
-        .inner
-        .on_hover_text(add)
-        .clicked()
+    if !is_base
+        && child
+            .add_enabled_ui(rules.add, |ui| widgets::glass_action_icon(ui, p, "plus", add, side, p.ink))
+            .inner
+            .on_hover_text(add)
+            .clicked()
         && rules.add
     {
         actions.push(Action::Wear(id, true));
@@ -677,7 +727,7 @@ fn hover_actions(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut Appeara
         .clicked()
         && rules.replace
     {
-        actions.push(Action::Wear(id, false));
+        actions.push(if is_base { Action::WearBase(id) } else { Action::Wear(id, false) });
     }
 }
 
@@ -799,17 +849,32 @@ fn preview_panel(
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new(&folder.info.name)
+                    egui::RichText::new(crate::world::base_outfits::display_name(inv, id).unwrap_or(&folder.info.name))
                         .size(18.0)
                         .family(fonts::semibold(ui.ctx()))
                         .color(p.ink),
                 )
                 .truncate(),
             )
-            .on_hover_text(&folder.info.name);
+            .on_hover_text(crate::world::base_outfits::display_name(inv, id).unwrap_or(&folder.info.name));
         });
         gallery::dropdown(&more, p, world, st, id, actions);
     });
+    let is_base = crate::world::base_outfits::is_base_folder(inv, id);
+    let linked_name = crate::world::base_outfits::linked_names(inv, id, &st.base_sets.data.folders);
+    if is_base {
+        ui.label(
+            egui::RichText::new(aurora_i18n::tr!("base-outfits-base"))
+                .size(11.0)
+                .color(p.violet_light),
+        );
+    } else if let Some(name) = linked_name {
+        ui.label(
+            egui::RichText::new(aurora_i18n::tr!("base-outfits-linked", name = name.as_str()))
+                .size(11.0)
+                .color(p.violet_light),
+        );
+    }
     ui.add_space(6.0);
     if let Some(rules) = rules {
         use widgets::{ActionKind, action_button_if};
@@ -820,19 +885,23 @@ fn preview_panel(
                 ui,
                 p,
                 "shirt-filled",
-                aurora_i18n::tr!("common-wear"),
+                if is_base {
+                    aurora_i18n::tr!("base-outfits-wear")
+                } else {
+                    aurora_i18n::tr!("common-wear")
+                },
                 ActionKind::Primary,
                 size,
                 rules.replace,
             )
             .clicked()
             {
-                actions.push(Action::Wear(id, false));
+                actions.push(if is_base { Action::WearBase(id) } else { Action::Wear(id, false) });
             }
-            if action_button_if(ui, p, "plus", aurora_i18n::tr!("common-add"), ActionKind::Flat, size, rules.add).clicked() {
+            if !is_base && action_button_if(ui, p, "plus", aurora_i18n::tr!("common-add"), ActionKind::Flat, size, rules.add).clicked() {
                 actions.push(Action::Wear(id, true));
             }
-            if rules.current {
+            if !is_base && rules.current {
                 if action_button_if(
                     ui,
                     p,
@@ -846,16 +915,17 @@ fn preview_panel(
                 {
                     st.open(st.tab, true);
                 }
-            } else if action_button_if(
-                ui,
-                p,
-                "minus",
-                aurora_i18n::tr!("ui-appearance-gallery-take-off"),
-                ActionKind::Flat,
-                size,
-                rules.remove,
-            )
-            .clicked()
+            } else if !is_base
+                && action_button_if(
+                    ui,
+                    p,
+                    "minus",
+                    aurora_i18n::tr!("ui-appearance-gallery-take-off"),
+                    ActionKind::Flat,
+                    size,
+                    rules.remove,
+                )
+                .clicked()
             {
                 actions.push(Action::RemoveOutfit(id));
             }
@@ -1044,6 +1114,73 @@ mod tests {
         world.inventory.generation += 1;
         collection(&world, &mut st, Filter::Folder(Uuid::from_u128(740)));
         assert_eq!(st.showcase_state.filter, Filter::All);
+    }
+
+    #[test]
+    fn base_outfits_have_a_separate_gallery_collection_and_stay_out_of_the_clothing_list() {
+        let (mut world, mut st) = grouped();
+        st.base_sets.data = crate::world::base_outfits::seed_demo(&mut world.inventory, world.agent_id);
+        let (bases, _, _) = collection(&world, &mut st, Filter::Bases);
+        assert_eq!(bases, vec![Uuid::from_u128(702), Uuid::from_u128(703), Uuid::from_u128(750)]);
+        let (all, _, _) = collection(&world, &mut st, Filter::All);
+        assert!(!all.contains(&Uuid::from_u128(702)) && !all.contains(&Uuid::from_u128(703)) && !all.contains(&Uuid::from_u128(750)));
+        st.tab = super::super::TAB_OUTFITS;
+        let clothes = st.shown_outfits(&world.inventory);
+        assert!(
+            !clothes.contains(&Uuid::from_u128(702))
+                && !clothes.contains(&Uuid::from_u128(703))
+                && !clothes.contains(&Uuid::from_u128(750))
+        );
+    }
+
+    #[test]
+    fn gallery_rail_shows_base_outfits_then_outfits_favorites_and_no_picture() {
+        let (mut world, mut st) = grouped();
+        st.showcase = true;
+        st.base_sets.data = crate::world::base_outfits::seed_demo(&mut world.inventory, world.agent_id);
+        let ctx = egui::Context::default();
+        crate::theme::Theme::default().apply(&ctx, 1.0);
+        let _icons = crate::ui::icons::Icons::load(&ctx, None);
+        for _ in 0..4 {
+            draw(&ctx, &mut world, &mut st, None);
+        }
+        let (_, shown) = frame(&ctx, &mut world, &mut st, Vec::new());
+        let labels = [
+            filter_label(&world, Filter::Bases),
+            filter_label(&world, Filter::All),
+            filter_label(&world, Filter::Favorites),
+            filter_label(&world, Filter::NoPicture),
+        ];
+        assert_eq!(
+            labels,
+            [
+                aurora_i18n::tr!("base-outfits-all"),
+                aurora_i18n::tr!("ui-appearance-showcase-all"),
+                aurora_i18n::tr!("common-favorites"),
+                aurora_i18n::tr!("ui-appearance-showcase-no-picture"),
+            ]
+        );
+        let rail_x = shown
+            .iter()
+            .filter(|(text, _)| text == &labels[0])
+            .map(|(_, pos)| pos.x)
+            .min_by(f32::total_cmp)
+            .expect("Base outfits collection row")
+            .round();
+        let positions: Vec<_> = labels
+            .iter()
+            .map(|label| {
+                shown
+                    .iter()
+                    .find(|(text, pos)| text == label && (pos.x.round() - rail_x).abs() < 2.0)
+                    .map(|(_, pos)| pos.y)
+                    .unwrap_or_else(|| panic!("missing {label} in the gallery rail: {shown:?}"))
+            })
+            .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "collection order: {positions:?}"
+        );
     }
 
     /// Every text drawn, with where its galley starts.

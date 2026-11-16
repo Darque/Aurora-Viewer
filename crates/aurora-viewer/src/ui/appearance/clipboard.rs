@@ -93,7 +93,7 @@ impl AppearanceUi {
     /// The rows Ctrl+C or Ctrl+X take in the view shown: the selected items
     /// of an outfit or of Worn, else the selected outfits.
     fn clipboard_ids(&self, inv: &Inventory, outfits: &[Uuid]) -> Vec<Uuid> {
-        let worn_view = self.editing || self.tab == 2;
+        let worn_view = self.editing || self.tab == super::TAB_WORN;
         if self.editing {
             let cof = model::cof(inv);
             return holders(inv, cof, &self.selected_item.into_iter().collect::<Vec<_>>());
@@ -102,7 +102,7 @@ impl AppearanceUi {
             if worn_view {
                 *scope == WORN_SCOPE
             } else {
-                self.tab == 1 && *scope != WORN_SCOPE && self.outfit_selection.focus == Some(*scope)
+                self.tab == super::TAB_OUTFITS && *scope != WORN_SCOPE && self.outfit_selection.focus == Some(*scope)
             }
         }) {
             let items = self.item_selection.all();
@@ -118,7 +118,7 @@ impl AppearanceUi {
     }
 
     fn paste_target(&self) -> PasteTo {
-        if self.editing || self.tab == 2 {
+        if self.editing || self.tab == super::TAB_WORN {
             PasteTo::Worn
         } else {
             PasteTo::Outfit(self.outfit_selection.focus)

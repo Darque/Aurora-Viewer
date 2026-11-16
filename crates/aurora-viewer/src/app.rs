@@ -3923,6 +3923,28 @@ impl App {
                 match result {
                     Ok(contents) => {
                         self.world.inventory.apply(contents);
+                        if let Some(mut active) = self.appearance_ui.pending_base.take() {
+                            let mut confirmed: std::collections::HashSet<_> = crate::world::appearance::cof(&self.world.inventory)
+                                .map(|cof| {
+                                    crate::world::appearance::folder_links(&self.world.inventory, cof)
+                                        .into_iter()
+                                        .filter(|link| !link.folder)
+                                        .map(|link| link.target)
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            confirmed.extend(self.appearance_ui.attachments.iter().map(|request| request.item_id));
+                            let removed = &self.appearance_ui.pending_base_removals;
+                            let still_base = |id: &uuid::Uuid| {
+                                confirmed.contains(id)
+                                    || (!removed.contains(id)
+                                        && self.world.inventory.items.get(id).is_none_or(|item| item.asset_type != 13))
+                            };
+                            active.retain_items(still_base);
+                            self.appearance_ui.base_sets.data.active = (!active.members.is_empty()).then_some(active);
+                        }
+                        self.appearance_ui.base_sets.refresh_now(&self.world.inventory);
+                        self.appearance_ui.pending_base_removals.clear();
                         self.appearance_ui.message.clear();
                         self.appearance_ui.save_as = None;
                         if self.appearance_ui.saved_new {
@@ -3943,8 +3965,25 @@ impl App {
                             }
                             self.world.outfit.wear_when_known(unknown, self.world.agent_id, Instant::now());
                         }
+                        if let Some(previous) = self.appearance_ui.restore_base_after_outfit.take() {
+                            let current = self
+                                .appearance_ui
+                                .base_sets
+                                .data
+                                .active
+                                .as_ref()
+                                .map(crate::world::base_outfits::Active::folders)
+                                .unwrap_or_default();
+                            let previous = previous.unwrap_or_default();
+                            if previous != current {
+                                self.apply_appearance_action(crate::world::appearance::Action::WearBases(previous));
+                            }
+                        }
                     }
                     Err(reason) => {
+                        self.appearance_ui.restore_base_after_outfit = None;
+                        self.appearance_ui.pending_base = None;
+                        self.appearance_ui.pending_base_removals.clear();
                         self.appearance_ui.attachments.clear();
                         self.inventory_ui.message.clone_from(&reason);
                         self.appearance_ui.message = reason;
@@ -4142,6 +4181,7 @@ impl App {
                 } else {
                     ui::emoji::recent::Recent::load(crate::settings::account_dir(&l.agent_id))
                 };
+                self.appearance_ui.base_sets = Default::default();
                 self.world.favorites = if self.demo {
                     Default::default()
                 } else {
@@ -20186,7 +20226,7 @@ impl App {
                 self.settings.people_tab = self.panels.people_tab;
                 self.settings.show_inventory = self.panels.inventory;
                 self.settings.show_appearance = self.panels.appearance;
-                self.settings.appearance_tab = u8::try_from(self.appearance_ui.tab).unwrap_or(0);
+                self.settings.appearance_tab = self.appearance_ui.stored_tab();
                 self.settings.show_ao = self.panels.ao;
                 // (the photo's time of day is its own layer, never saved)
                 if self.panels.time_of_day != self.settings.time_of_day {
@@ -22196,8 +22236,16 @@ impl ApplicationHandler for App {
             }
             if let Ok(view) = std::env::var("AURORA_DEMO_APPEARANCE") {
                 crate::world::appearance::seed_demo(&mut self.world.inventory, self.world.agent_id);
+                if view == "base-outfits" {
+                    self.appearance_ui.base_sets.data =
+                        crate::world::base_outfits::seed_demo(&mut self.world.inventory, self.world.agent_id);
+                }
                 // showcase: the gallery's showcase with folders, pictures and favorites
-                let showcase = view == "showcase" || view.starts_with("portrait") || view == "photo-mode" || view.starts_with("batch");
+                let showcase = view == "showcase"
+                    || view == "base-outfits"
+                    || view.starts_with("portrait")
+                    || view == "photo-mode"
+                    || view.starts_with("batch");
                 if view.starts_with("folders") || showcase {
                     crate::world::outfit_folders::seed_demo(&mut self.world.inventory, self.world.agent_id);
                     if view.starts_with("folders-many") {
@@ -22223,6 +22271,9 @@ impl ApplicationHandler for App {
                 if showcase {
                     ui::appearance::demo_previews(&self.egui_ctx, &mut self.world.inventory, &mut self.ui_images);
                     ui::appearance::demo_showcase(&mut self.world.inventory, &mut self.appearance_ui);
+                    if view == "base-outfits" {
+                        ui::appearance::demo_base_outfits(&mut self.appearance_ui);
+                    }
                 }
                 let many = crate::world::appearance::demo_outfit_count();
                 if many > 0 {
@@ -22241,6 +22292,7 @@ impl ApplicationHandler for App {
                     match view.as_str() {
                         "outfits" | "multi-outfits" | "folders-outfits" | "folders-many-outfits" | "wearables-outfits" | "broken" => 1,
                         "worn" | "multi-worn" | "save" | "wearables" | "take-off-folder" => 2,
+                        "base-outfits" => 0,
                         _ => 0,
                     },
                     matches!(view.as_str(), "edit" | "wearables-edit") || view.starts_with("layers"),

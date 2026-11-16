@@ -65,7 +65,7 @@ fn target(inv: &Inventory, to: Uuid) -> Option<Target> {
 }
 
 /// can_move_to_outfit: what an outfit or the Current Outfit may hold.
-fn wearable(inv: &Inventory, id: Uuid, current: bool) -> bool {
+pub(super) fn wearable(inv: &Inventory, id: Uuid, current: bool) -> bool {
     inv.items.get(&id).is_some_and(|it| {
         // IT_OBJECT, IT_ATTACHMENT, IT_WEARABLE, IT_GESTURE; the Legacy
         // Viewer lets textures and snapshots through only to refuse them in

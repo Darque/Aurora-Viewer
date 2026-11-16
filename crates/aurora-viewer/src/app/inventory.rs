@@ -891,6 +891,72 @@ impl App {
     }
 
     pub(super) fn apply_appearance_action_from(&mut self, action: crate::world::appearance::Action, actor: Uuid) {
+        use crate::world::{appearance::Action, base_outfits};
+        self.appearance_ui.base_sets.refresh_now(&self.world.inventory);
+        if let Action::MarkBase(id, mark) = &action {
+            let id = *id;
+            let mark = *mark;
+            if self.appearance_ui.pending.is_some() || !crate::world::outfit_folders::in_my_outfits(&self.world.inventory, id) {
+                return;
+            }
+            let Some(folder) = self.world.inventory.folders.get(&id) else {
+                return;
+            };
+            let old_name = folder.info.name.clone();
+            let new_name = if mark && !old_name.starts_with('.') {
+                format!(".{old_name}")
+            } else if !mark && old_name.starts_with('.') {
+                old_name.trim_start_matches('.').to_owned()
+            } else {
+                return;
+            };
+            if new_name.chars().count() > 63 {
+                self.appearance_ui.message = aurora_i18n::tr!("world-appearance-choose-a-name-of-1-to-63-characters").into();
+                return;
+            }
+            if !mark
+                && (self
+                    .appearance_ui
+                    .base_sets
+                    .data
+                    .active
+                    .as_ref()
+                    .is_some_and(|base| base.contains(id))
+                    || self.world.inventory.folders.keys().any(|folder| {
+                        crate::world::appearance::folder_links(&self.world.inventory, *folder)
+                            .iter()
+                            .any(|link| link.folder && link.target == id)
+                    }))
+            {
+                self.appearance_ui.message = aurora_i18n::tr!("base-outfits-still-used").into();
+                return;
+            }
+            return self.apply_appearance_action_from(
+                Action::Category(id, aurora_net::outfits::categories::Update::Rename(new_name)),
+                actor,
+            );
+        }
+        if let Action::SetBaseLink { outfit, base } = &action {
+            if self.appearance_ui.pending.is_some() {
+                return;
+            }
+            if let Some(target) = base {
+                for command in base_outfits::prepare(&mut self.world.inventory, &[*target], self.world.agent_id) {
+                    self.send(command);
+                }
+            }
+            match base_outfits::set_link(&self.world.inventory, *outfit, *base, &self.appearance_ui.base_sets.data.folders) {
+                Ok(change) => {
+                    let request = Uuid::new_v4();
+                    self.appearance_ui.pending = Some((request, false));
+                    self.appearance_ui.saved_new = false;
+                    self.appearance_ui.message.clear();
+                    self.send(NetCommand::UpdateOutfit { request, change });
+                }
+                Err(reason) => self.appearance_ui.message = base_outfits::error_text(reason),
+            }
+            return;
+        }
         match &action {
             crate::world::appearance::Action::ExportJson(folder) => {
                 let result =
@@ -972,6 +1038,7 @@ impl App {
             _ => {}
         }
         if self.appearance_ui.pending.is_some() {
+            self.appearance_ui.restore_base_after_outfit = None;
             return;
         }
         if let crate::world::appearance::Action::Category(id, update) = action {
@@ -991,6 +1058,48 @@ impl App {
             }
             return;
         }
+        let mut base_to_wear = match &action {
+            Action::WearBase(id) => vec![*id],
+            Action::WearBases(ids) => ids.clone(),
+            Action::Wear(id, _) if self.appearance_ui.base_sets.data.folders.contains(id) => vec![*id],
+            Action::WearContents { folder, .. } if self.appearance_ui.base_sets.data.folders.contains(folder) => vec![*folder],
+            Action::Wear(id, false) => base_outfits::linked_bases(&self.world.inventory, *id, &self.appearance_ui.base_sets.data.folders),
+            Action::WearOutfits { folders, append: false } => folders
+                .iter()
+                .flat_map(|id| base_outfits::linked_bases(&self.world.inventory, *id, &self.appearance_ui.base_sets.data.folders))
+                .collect(),
+            Action::Revert => crate::world::appearance::base(&self.world.inventory)
+                .map(|id| base_outfits::linked_bases(&self.world.inventory, id, &self.appearance_ui.base_sets.data.folders))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        base_to_wear.sort_unstable();
+        base_to_wear.dedup();
+        if matches!(action, Action::ClearBase)
+            && actor.is_nil()
+            && self.appearance_ui.base_sets.data.active.as_ref().is_some_and(|base| {
+                base.folders()
+                    .iter()
+                    .any(|folder| !self.world.rlva_wear_locks().folder_allows(*folder, false))
+            })
+        {
+            self.appearance_ui.restore_base_after_outfit = None;
+            self.appearance_ui.message = aurora_i18n::tr!("rlva-blocked").into();
+            return;
+        }
+        if !base_to_wear.is_empty() {
+            for command in base_outfits::prepare(&mut self.world.inventory, &base_to_wear, self.world.agent_id) {
+                self.send(command);
+            }
+            if actor.is_nil() {
+                let locks = self.world.rlva_wear_locks();
+                if base_to_wear.iter().any(|id| !locks.folder_allows(*id, true)) {
+                    self.appearance_ui.restore_base_after_outfit = None;
+                    self.appearance_ui.message = aurora_i18n::tr!("rlva-blocked").into();
+                    return;
+                }
+            }
+        }
         self.appearance_ui.saved_new = matches!(
             &action,
             crate::world::appearance::Action::Save(Some(_))
@@ -998,8 +1107,25 @@ impl App {
                 | crate::world::appearance::Action::ImportJson { .. }
         );
         let attachments = crate::world::appearance::attachments_for_action(&self.world.inventory, self.world.agent_id, &action);
-        match crate::world::appearance::plan(&self.world.inventory, action, &self.world.outfit_attachment_points()) {
-            Ok((change, sync)) => {
+        let removals: Vec<Uuid> = match &action {
+            Action::Remove(id) => vec![*id],
+            Action::RemoveItems(ids) | Action::Force { remove: ids, .. } => ids.clone(),
+            Action::ReplaceWearable { old, .. } => vec![*old],
+            _ => Vec::new(),
+        };
+        self.appearance_ui.pending_base_removals = removals
+            .into_iter()
+            .map(|id| crate::world::inventory::actions::original(&self.world.inventory, id).unwrap_or(id))
+            .collect();
+        match base_outfits::plan(
+            &self.world.inventory,
+            action,
+            &self.world.outfit_attachment_points(),
+            &self.appearance_ui.base_sets.data,
+        ) {
+            Ok((change, sync, active)) => {
+                self.appearance_ui.pending_base =
+                    active.or_else(|| sync.then(|| self.appearance_ui.base_sets.data.active.clone()).flatten());
                 let request = uuid::Uuid::new_v4();
                 self.appearance_ui.pending = Some((request, sync));
                 self.appearance_ui.pending_actor = actor;
@@ -1011,7 +1137,13 @@ impl App {
                 // rez that follows: RLVa would refuse it as a whole.
                 let dropped = self.world.rlva_prepare_outfit(&mut command, actor);
                 self.appearance_ui.attachments.retain(|a| !dropped.contains(&a.item_id));
+                if let Some(active) = &mut self.appearance_ui.pending_base {
+                    active.retain_items(|id| !dropped.contains(id));
+                }
                 if !self.world.rlva_allows_command(&command, actor) {
+                    self.appearance_ui.pending_base = None;
+                    self.appearance_ui.restore_base_after_outfit = None;
+                    self.appearance_ui.pending_base_removals.clear();
                     self.appearance_ui.pending = None;
                     self.appearance_ui.attachments.clear();
                 } else if let NetCommand::UpdateOutfit { change, .. } = &mut command {
@@ -1026,6 +1158,8 @@ impl App {
                 self.send_from(command, actor);
             }
             Err(reason) => {
+                self.appearance_ui.restore_base_after_outfit = None;
+                self.appearance_ui.pending_base_removals.clear();
                 self.inventory_ui.message.clone_from(&reason);
                 self.appearance_ui.message = reason;
                 self.reload_outfit();
