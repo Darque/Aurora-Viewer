@@ -135,7 +135,7 @@ pub(super) struct Batch {
     hd_confirm: Option<i32>,
     /// The HD pictures confirmed at the start: their side and the price of
     /// each.
-    hd: Option<(u32, i32)>,
+    hd: Option<((u32, u32), i32)>,
 }
 
 /// What tells that an outfit has loaded.
@@ -300,12 +300,16 @@ impl App {
 
     /// The HD pictures for the outfits ticked: (the side, the price of
     /// each, the total's offer against the balance).
-    fn outfit_batch_hd_offer(&self) -> Option<(u32, Option<i32>, HdOffer)> {
+    fn outfit_batch_hd_offer(&self) -> Option<((u32, u32), Option<i32>, HdOffer)> {
         let b = self.outfit_batch.as_ref()?;
-        let side = b.settings.hd_side.side();
-        let each = self.outfit_hd_price(side);
+        let dimensions = b.settings.ratio.dimensions(b.settings.hd_side.side());
+        let each = self.outfit_hd_price_dimensions(dimensions);
         let count = b.entries.iter().filter(|e| e.chosen).count();
-        Some((side, each, portrait::hd_offer(portrait::hd_total(each, count), self.world.balance)))
+        Some((
+            dimensions,
+            each,
+            portrait::hd_offer(portrait::hd_total(each, count), self.world.balance),
+        ))
     }
 
     /// Start: with the HD pictures ticked and payable, their total is
@@ -316,8 +320,8 @@ impl App {
             return;
         }
         let hd = match self.outfit_batch_hd_offer() {
-            Some((side, Some(each), HdOffer::Ready(total))) if self.outfit_batch.as_ref().is_some_and(|b| b.settings.hd) => {
-                Some((side, each, total))
+            Some((dimensions, Some(each), HdOffer::Ready(total))) if self.outfit_batch.as_ref().is_some_and(|b| b.settings.hd) => {
+                Some((dimensions, each, total))
             }
             _ => None,
         };
@@ -329,9 +333,13 @@ impl App {
             return;
         }
         b.hd_confirm = None;
-        b.hd = hd.map(|(side, each, _)| (side, each));
-        if let Some((side, each, total)) = hd {
-            log::info!("outfit batch: HD pictures {side} x {side} at L$ {each} each, L$ {total} confirmed");
+        b.hd = hd.map(|(dimensions, each, _)| (dimensions, each));
+        if let Some((dimensions, each, total)) = hd {
+            log::info!(
+                "outfit batch: HD pictures {} x {} at L$ {each} each, L$ {total} confirmed",
+                dimensions.0,
+                dimensions.1
+            );
         }
         self.inventory_images.hd.batch = Default::default();
         self.outfit_batch_start();
@@ -531,8 +539,8 @@ impl App {
                     let hd_pixels = hd.map(|_| shot.pixels.clone());
                     if self.outfit_photo_pixels(outfit, shot.size, shot.pixels) {
                         log::info!("outfit batch: photo of {outfit} saving");
-                        if let (Some((side, each)), Some(pixels)) = (hd, hd_pixels) {
-                            self.outfit_hd_start(outfit, shot.size, pixels, side, each, true);
+                        if let (Some((dimensions, each)), Some(pixels)) = (hd, hd_pixels) {
+                            self.outfit_hd_start(outfit, shot.size, pixels, dimensions, each, true);
                         }
                         Some(State::Saving { missing })
                     } else {

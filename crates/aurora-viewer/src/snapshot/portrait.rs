@@ -21,6 +21,35 @@ pub enum Framing {
     Face,
 }
 
+/// The shape of an outfit portrait. The longest side is the selected HD
+/// size; the free inventory thumbnail is still cropped to a square.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Ratio {
+    #[default]
+    Square,
+    TwoThree,
+    ThreeFive,
+}
+
+impl Ratio {
+    /// The image dimensions when `long_side` is the longer edge.
+    pub fn dimensions(self, long_side: u32) -> (u32, u32) {
+        match self {
+            Self::Square => (long_side, long_side),
+            Self::TwoThree => (long_side.saturating_mul(2).div_ceil(3), long_side),
+            Self::ThreeFive => (long_side.saturating_mul(3).div_ceil(5), long_side),
+        }
+    }
+
+    pub fn aspect(self) -> f32 {
+        match self {
+            Self::Square => 1.0,
+            Self::TwoThree => 2.0 / 3.0,
+            Self::ThreeFive => 3.0 / 5.0,
+        }
+    }
+}
+
 /// The pose shown while the portrait is set up, on our screen only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Pose {
@@ -69,6 +98,7 @@ pub enum Lighting {
 #[serde(default)]
 pub struct PortraitSettings {
     pub framing: Framing,
+    pub ratio: Ratio,
     pub pose: Pose,
     pub angle: Angle,
     pub backdrop: Backdrop,
@@ -176,6 +206,7 @@ impl Default for PortraitSettings {
     fn default() -> Self {
         Self {
             framing: Framing::Body,
+            ratio: Ratio::Square,
             pose: Pose::A,
             angle: Angle::Front,
             backdrop: Backdrop::Dark,
@@ -284,6 +315,13 @@ const HAND: f32 = 0.12;
 /// `fov` (radians): the chosen part of the avatar fills the frame with a
 /// small margin, the camera level with its middle, from the chosen side.
 pub fn frame(j: &Joints, framing: Framing, angle: Angle, fov: f32) -> (Vec3, Vec3) {
+    frame_for_aspect(j, framing, angle, fov, 1.0)
+}
+
+/// The camera's eye and target for an image of `aspect` width-to-height.
+/// A portrait aspect lets the avatar fill more of a tall image without
+/// widening the crop on either side.
+pub fn frame_for_aspect(j: &Joints, framing: Framing, angle: Angle, fov: f32, aspect: f32) -> (Vec3, Vec3) {
     let turn = match angle {
         Angle::Front => 0.0,
         Angle::ThreeQuarter => 35f32.to_radians(),
@@ -333,10 +371,21 @@ pub fn frame(j: &Joints, framing: Framing, angle: Angle, fov: f32) -> (Vec3, Vec
         (low, high) = (-0.3, 0.3);
     }
     let across = (low + high) * 0.5;
-    let half = ((top - bottom) * 0.5).max((high - low) * 0.5).max(0.05) * (1.0 + MARGIN);
+    let aspect = aspect.clamp(0.1, 4.0);
+    let vertical_half = (top - bottom) * 0.5;
+    let horizontal_half = (high - low) * 0.5 / aspect;
+    let half = vertical_half.max(horizontal_half).max(0.05) * (1.0 + MARGIN);
     let target = Vec3::new(middle.x, middle.y, (top + bottom) * 0.5) + right * across;
     let distance = half / (fov * 0.5).tan().max(0.05);
     (target + toward * distance, target)
+}
+
+/// Account-local detail pictures use outfit UUIDs rather than inventory
+/// item IDs, since they are kept on this device and never uploaded.
+pub fn local_image_path(agent: uuid::Uuid, outfit: uuid::Uuid) -> std::path::PathBuf {
+    crate::settings::account_dir(&agent)
+        .join("outfit-portraits")
+        .join(format!("{outfit}.png"))
 }
 
 #[cfg(test)]
@@ -388,6 +437,25 @@ mod tests {
             let (x, _) = project(eye, target, fov, hand);
             assert!(x.abs() < 1.0, "the hands inside: {x}");
         }
+    }
+
+    #[test]
+    fn portrait_ratios_use_the_selected_long_edge() {
+        assert_eq!(Ratio::Square.dimensions(1024), (1024, 1024));
+        assert_eq!(Ratio::TwoThree.dimensions(1024), (683, 1024));
+        assert_eq!(Ratio::ThreeFive.dimensions(1024), (615, 1024));
+    }
+
+    #[test]
+    fn tall_portrait_frame_uses_less_camera_distance_than_square() {
+        let j = standing();
+        let square = frame(&j, Framing::Body, Angle::Front, 1.0);
+        let tall = frame_for_aspect(&j, Framing::Body, Angle::Front, 1.0, Ratio::ThreeFive.aspect());
+        let t = (1.0_f32 * 0.5).tan();
+        let avatar_width = 1.44; // hands plus the portrait's small hand margin
+        let square_fill = avatar_width / (2.0 * square.0.distance(square.1) * t);
+        let tall_fill = avatar_width / (2.0 * tall.0.distance(tall.1) * t * Ratio::ThreeFive.aspect());
+        assert!(tall_fill > square_fill, "the tall frame should use more of its narrower width");
     }
 
     #[test]

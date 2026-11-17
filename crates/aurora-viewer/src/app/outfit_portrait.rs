@@ -107,8 +107,8 @@ pub(super) struct Shot {
 
 pub(super) struct Session {
     outfit: Uuid,
-    kind: Kind,
-    settings: PortraitSettings,
+    pub(super) kind: Kind,
+    pub(super) settings: PortraitSettings,
     /// What the session changes, as it was.
     camera: crate::camera::Camera,
     yaw: f32,
@@ -358,8 +358,8 @@ impl App {
             return;
         };
         // a change of the framing's choices: the camera follows again
-        let framing = (s.settings.framing, s.settings.angle, s.settings.pose);
-        if s.kind == Kind::Studio && s.framed.as_ref().map(|f| (f.framing, f.angle, f.pose)) != Some(framing) {
+        let framing = (s.settings.framing, s.settings.ratio, s.settings.angle, s.settings.pose);
+        if s.kind == Kind::Studio && s.framed.as_ref().map(|f| (f.framing, f.ratio, f.angle, f.pose)) != Some(framing) {
             s.reframe = Some(Instant::now() + REFRAME);
             s.sun_due = true;
         }
@@ -372,7 +372,7 @@ impl App {
             && !s.shooting
             && let Some(j) = &joints
         {
-            let (eye, target) = portrait::frame(j, s.settings.framing, s.settings.angle, fov);
+            let (eye, target) = portrait::frame_for_aspect(j, s.settings.framing, s.settings.angle, fov, s.settings.ratio.aspect());
             if std::mem::take(&mut s.sun_due) {
                 // the key light behind the camera, to its side and high
                 let toward = (eye - target).truncate();
@@ -491,8 +491,8 @@ impl App {
         if s.shot.is_none() {
             return;
         }
-        let side = s.settings.hd_side.side();
-        let hd = match self.outfit_hd_offer(side) {
+        let dimensions = s.settings.ratio.dimensions(s.settings.hd_side.side());
+        let hd = match self.outfit_hd_offer_dimensions(dimensions) {
             portrait::HdOffer::Ready(cost) if s.settings.hd && !self.outfit_hd_busy() => Some(cost),
             _ => None,
         };
@@ -509,36 +509,29 @@ impl App {
             (s.outfit, s.settings.hd_local, shot.size, shot.pixels.clone())
         };
         if save_local {
-            let name = self
-                .world
-                .inventory
-                .folders
-                .get(&outfit)
-                .map_or("outfit", |folder| folder.info.name.as_str());
-            let safe_name: String = name.chars().map(|c| if matches!(c, '/' | '\\' | ':') { '_' } else { c }).collect();
-            let file_name = format!("{safe_name} HD picture.png");
-            let Some(path) = rfd::FileDialog::new()
-                .set_title(aurora_i18n::tr!("ui-appearance-portrait-hd-local-save-title"))
-                .add_filter("PNG image", &["png"])
-                .set_file_name(&file_name)
-                .save_file()
-            else {
-                return;
-            };
+            let path = portrait::local_image_path(self.world.agent_id, outfit);
             let Some(image) = image::RgbaImage::from_raw(size.0, size.1, pixels) else {
                 self.appearance_ui.message = aurora_i18n::tr!("ui-appearance-portrait-hd-local-error", reason = "photo pixels").to_owned();
                 return;
             };
-            let image = if image.dimensions() == (side, side) {
+            let image = if image.dimensions() == dimensions {
                 image
             } else {
-                image::imageops::resize(&image, side, side, image::imageops::FilterType::Lanczos3)
+                image::imageops::resize(&image, dimensions.0, dimensions.1, image::imageops::FilterType::Lanczos3)
             };
-            if let Err(error) = image::save_buffer(&path, &image, side, side, image::ColorType::Rgba8) {
+            let Some(parent) = path.parent() else {
+                self.appearance_ui.message = aurora_i18n::tr!("ui-appearance-portrait-hd-local-error", reason = "storage path").to_owned();
+                return;
+            };
+            if let Err(error) = std::fs::create_dir_all(parent).and_then(|()| {
+                image::save_buffer(&path, &image, dimensions.0, dimensions.1, image::ColorType::Rgba8).map_err(std::io::Error::other)
+            }) {
                 self.appearance_ui.message =
                     aurora_i18n::tr!("ui-appearance-portrait-hd-local-error", reason = error.to_string()).to_owned();
                 return;
             }
+            self.appearance_ui.local_hd_checked.remove(&outfit);
+            self.appearance_ui.wanted_local_hd.insert(outfit);
         }
         let Some(s) = &mut self.outfit_portrait else {
             return;
@@ -552,7 +545,7 @@ impl App {
             return;
         }
         if let (Some(cost), Some(pixels)) = (hd, hd_pixels) {
-            self.outfit_hd_start(outfit, shot.size, pixels, side, cost, false);
+            self.outfit_hd_start(outfit, shot.size, pixels, dimensions, cost, false);
         }
         log::info!("outfit portrait: photo used for {outfit}");
         if let Some(s) = &mut self.outfit_portrait {
@@ -568,7 +561,7 @@ impl App {
         let bases = &self.appearance_ui.base_sets.data.folders;
         let image = crate::world::appearance::outfit_image(inv, s.outfit);
         let hd = window::HdView {
-            offer: self.outfit_hd_offer(s.settings.hd_side.side()),
+            offer: self.outfit_hd_offer_dimensions(s.settings.ratio.dimensions(s.settings.hd_side.side())),
             busy: self.outfit_hd_busy(),
             confirm: s.hd_confirm,
             has_one: !crate::world::appearance::hd_pictures(inv, s.outfit).is_empty(),
@@ -779,7 +772,7 @@ impl App {
     }
 }
 
-/// `AURORA_DEMO_APPEARANCE=portrait|portrait-base|portrait-not-worn|portrait-shot|photo-mode`,
+/// `AURORA_DEMO_APPEARANCE=portrait|portrait-base|portrait-not-worn|portrait-shot|portrait-ratio-2-3|portrait-ratio-3-5|photo-mode`,
 /// and the HD picture's `portrait-hd|portrait-hd-local|portrait-hd-poor|photo-mode-hd`.
 fn demo_mode() -> Option<&'static str> {
     static MODE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
@@ -798,7 +791,7 @@ impl App {
     /// (`portrait-base`), or the square photo mode
     /// (`photo-mode`); `portrait-shot` takes the photo at frame 900. The HD
     /// picture's: chosen at 1024 with a fictional L$ 500 balance
-    /// (`portrait-hd`, `photo-mode-hd`), a locally saved PNG
+    /// (`portrait-hd`, `photo-mode-hd`), an account-local PNG
     /// (`portrait-hd-local`), or a L$ 5 one that cannot pay the
     /// demo's L$ 10 (`portrait-hd-poor`); the demo's upload takes the price
     /// off the balance.
@@ -834,6 +827,8 @@ impl App {
                         "portrait-bust" => s.settings.framing = portrait::Framing::Bust,
                         "portrait-face" => s.settings.framing = portrait::Framing::Face,
                         "portrait-profile" => s.settings.angle = portrait::Angle::Profile,
+                        "portrait-ratio-2-3" => s.settings.ratio = portrait::Ratio::TwoThree,
+                        "portrait-ratio-3-5" | "portrait-hd-local" => s.settings.ratio = portrait::Ratio::ThreeFive,
                         _ => {}
                     }
                     if mode.ends_with("-hd") || mode == "portrait-hd-poor" {
@@ -851,7 +846,7 @@ impl App {
                     _ => {}
                 }
             }
-            900 if mode == "portrait-shot" => self.outfit_portrait_shoot(),
+            900 if matches!(mode, "portrait-shot" | "portrait-hd-local") => self.outfit_portrait_shoot(),
             _ => {}
         }
     }

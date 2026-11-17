@@ -10374,17 +10374,23 @@ gallery's double-click continues to open the outfit's contents.
   Take off, the items by Body parts / Clothing / Attachments with Worn tags
   and a hover Wear, and Copy outfit list. Make the window narrower: under
   820 points the rail becomes a menu over the grid, under 600 the preview
-  gives way to the selection card under the grid.
+  gives way to the selection card under the grid. Base outfits and Outfits
+  keep the accordion list and show this same preview beside it in a wide
+  window. The Folders heading has a folder-plus icon at its right edge; it
+  opens New folder without taking a row from the folder list.
 - `portrait`, `portrait-base`, `portrait-not-worn`, `portrait-shot`, `portrait-bust`,
-  `portrait-face`, `portrait-profile`, `photo-mode`: the showcase, then at
+  `portrait-face`, `portrait-profile`, `portrait-ratio-2-3`,
+  `portrait-ratio-3-5`, `photo-mode`: the showcase, then at
   frame 600 the outfit's auto portrait (Fider #447) of the outfit worn (in
   that framing or angle), of one not worn, or the square photo mode;
   `portrait-shot` also takes the photo at frame 900. The window: the live preview framed on
-  the avatar (thirds, corners, "Framed automatically"), Framing / Pose /
-  Angle / Backdrop / Light, Hide the other avatars, Keep these settings,
+  the avatar (thirds, corners, "Framed automatically"), Framing and Image
+  ratio, Pose / Angle / Backdrop / Light, Hide the other avatars, Keep these settings,
   Cancel / Take the photo, then Retake / Use this photo, and the link to the
   photo mode. Check that the whole body, the bust or the face fills the
-  square with a small margin, from the front, three-quarter or profile; the
+  selected square, 2:3 or 3:5 frame with a small margin, from the front,
+  three-quarter or profile. The portrait uses its available width and lets
+  the notes continue below; the free inventory thumbnail stays square. The
   A pose lowers the arms to about 45°, Arms by the sides to the body; the
   backdrops flatten the cut-out avatar over dark, grey or light, The scene
   keeps the region; Studio lights the avatar from behind the camera. Cancel
@@ -10408,9 +10414,13 @@ gallery's double-click continues to open the outfit's contents.
   preview the HD one, the balance drops by L$ 10 and the outfit's folder
   holds "Photo of "…" outfit"; a second HD picture sends the first to the
   Trash. The log says `outfit HD picture: …` at each step.
-  In `portrait-hd-local`, choose **HD Picture locally**, take and use the
-  portrait, save the PNG at 1024 × 1024, and confirm the free outfit thumbnail
-  is set while there is no paid HD upload or balance change.
+  In `portrait-hd-local`, **HD Picture locally** is selected, the photo is
+  taken at 900, and Use this photo stores a 615 × 1024 PNG under the account's
+  `outfit-portraits` data directory without a file picker. Confirm the free
+  outfit thumbnail is set with no paid HD upload or balance change. The
+  showcase preview's Image button opens the detailed local image; close and
+  reopen Appearance to confirm it loads from disk. The 2:3 and 3:5 demo
+  variants show each crop before capture.
 - `batch`, `batch-run`: the showcase, then at frame 600 the batch
   portraits' window (Fider #447, the banner's Take the portraits) over the
   demo's outfits: those without a picture ticked, those with one to tick to

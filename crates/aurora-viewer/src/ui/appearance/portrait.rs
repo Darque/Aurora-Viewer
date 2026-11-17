@@ -9,7 +9,7 @@
 //! its price comes first, and Use asks to confirm it before it is paid.
 
 use super::super::{icons, widgets};
-use crate::snapshot::portrait::{Angle, Backdrop, Framing, HdOffer, HdSide, Lighting, PortraitSettings, Pose};
+use crate::snapshot::portrait::{Angle, Backdrop, Framing, HdOffer, HdSide, Lighting, PortraitSettings, Pose, Ratio};
 use crate::theme::Palette;
 use crate::ui::fonts;
 use egui::{Align2, Rect, RichText, Sense, Vec2};
@@ -82,6 +82,7 @@ pub struct View<'a> {
 }
 
 const FRAMINGS: [Framing; 3] = [Framing::Body, Framing::Bust, Framing::Face];
+const RATIOS: [Ratio; 3] = [Ratio::Square, Ratio::TwoThree, Ratio::ThreeFive];
 const POSES: [Pose; 3] = [Pose::A, Pose::ArmsDown, Pose::Current];
 const ANGLES: [Angle; 3] = [Angle::Front, Angle::ThreeQuarter, Angle::Profile];
 const BACKDROPS: [Backdrop; 4] = [Backdrop::Dark, Backdrop::Grey, Backdrop::Light, Backdrop::Scene];
@@ -109,31 +110,30 @@ pub fn window(ctx: &egui::Context, p: &Palette, settings: &mut PortraitSettings,
     actions
 }
 
-/// The preview and its notes on the left, the choices on the right.
+/// The preview and its notes on the left, the choices on the right. A tall
+/// frame keeps its full width; its notes continue below it in the scroll.
 fn body(ui: &mut egui::Ui, p: &Palette, settings: &mut PortraitSettings, view: &View, actions: &mut Vec<Action>) {
     let room = ui.available_rect_before_wrap();
-    // the notes under the square: the local note, the current picture and
-    // the offer to wear the outfit, each when shown
-    let mut notes = 140.0;
-    if view.current.is_some() {
-        notes += 100.0;
-    }
-    if !view.worn {
-        notes += if view.previous.is_some() { 40.0 } else { 130.0 };
-    }
-    let side = (room.width() * 0.54).min(room.height() - notes).max(120.0);
+    let width = (room.width() * 0.54).max(120.0);
+    let height = width / settings.ratio.aspect();
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 16.0;
         ui.vertical(|ui| {
-            ui.set_width(side);
-            ui.spacing_mut().item_spacing.y = 10.0;
-            let (square, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
-            preview(ui, p, square, view);
-            not_worn(ui, p, view, actions);
-            note(ui, p, "info-circle-filled", aurora_i18n::tr!("ui-appearance-portrait-local"));
-            if let Some(t) = view.current {
-                current(ui, p, t);
-            }
+            ui.set_width(width);
+            egui::ScrollArea::vertical()
+                .id_salt("outfit_portrait_preview_notes")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    let (frame, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+                    preview(ui, p, frame, view);
+                    not_worn(ui, p, view, actions);
+                    note(ui, p, "info-circle-filled", aurora_i18n::tr!("ui-appearance-portrait-local"));
+                    if let Some(t) = view.current {
+                        current(ui, p, t);
+                    }
+                });
         });
         ui.vertical(|ui| {
             // (scrolled when a large text or a short window leaves no room)
@@ -164,6 +164,30 @@ pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSetting
             aurora_i18n::tr!("ui-appearance-portrait-body"),
             aurora_i18n::tr!("ui-appearance-portrait-bust"),
             aurora_i18n::tr!("ui-appearance-portrait-face"),
+        ],
+    );
+    choice(
+        ui,
+        p,
+        aurora_i18n::tr!("ui-appearance-portrait-ratio"),
+        &mut s.ratio,
+        &RATIOS,
+        &[
+            aurora_i18n::tr!("ui-appearance-portrait-ratio-square"),
+            aurora_i18n::tr!("ui-appearance-portrait-ratio-two-three"),
+            aurora_i18n::tr!("ui-appearance-portrait-ratio-three-five"),
+        ],
+    );
+    choice(
+        ui,
+        p,
+        aurora_i18n::tr!("ui-appearance-portrait-ratio"),
+        &mut s.ratio,
+        &RATIOS,
+        &[
+            aurora_i18n::tr!("ui-appearance-portrait-ratio-square"),
+            aurora_i18n::tr!("ui-appearance-portrait-ratio-two-three"),
+            aurora_i18n::tr!("ui-appearance-portrait-ratio-three-five"),
         ],
     );
     choice(
@@ -253,7 +277,11 @@ fn hd_choice(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSettings, hd: &HdVi
     let on = s.hd || s.hd_local;
     ui.add_enabled_ui(on, |ui| {
         let mut selected = HD_SIDES.iter().position(|v| *v == s.hd_side).unwrap_or(0);
-        let options = [("512 × 512", false), ("1024 × 1024", false)];
+        let small = s.ratio.dimensions(HdSide::Side512.side());
+        let large = s.ratio.dimensions(HdSide::Side1024.side());
+        let small_label = format!("{} × {}", small.0, small.1);
+        let large_label = format!("{} × {}", large.0, large.1);
+        let options = [(small_label.as_str(), false), (large_label.as_str(), false)];
         if widgets::segmented_size(ui, &options).x <= ui.available_width() {
             if widgets::segmented(ui, p, &mut selected, &options) {
                 s.hd_side = HD_SIDES[selected];
@@ -309,7 +337,11 @@ pub(super) fn hd_box(
     });
     ui.add_enabled_ui(ready && on, |ui| {
         let mut selected = HD_SIDES.iter().position(|v| *v == s.hd_side).unwrap_or(0);
-        let options = [("512 × 512", false), ("1024 × 1024", false)];
+        let small = s.ratio.dimensions(HdSide::Side512.side());
+        let large = s.ratio.dimensions(HdSide::Side1024.side());
+        let small_label = format!("{} × {}", small.0, small.1);
+        let large_label = format!("{} × {}", large.0, large.1);
+        let options = [(small_label.as_str(), false), (large_label.as_str(), false)];
         // (side by side, or one under the other in a narrow panel)
         if widgets::segmented_size(ui, &options).x <= ui.available_width() {
             if widgets::segmented(ui, p, &mut selected, &options) {
@@ -403,21 +435,17 @@ fn choice<T: Copy + PartialEq>(ui: &mut egui::Ui, p: &Palette, title: &str, valu
 
 /// The preview, or the photo to confirm, with the thirds, the corners and
 /// the "framed" pill.
-fn preview(ui: &egui::Ui, p: &Palette, square: Rect, view: &View) {
-    let painter = ui.painter_at(square);
+fn preview(ui: &egui::Ui, p: &Palette, frame: Rect, view: &View) {
+    let painter = ui.painter_at(frame);
     let radius = ui.visuals().window_corner_radius;
-    painter.rect_filled(square, radius, p.bar);
+    painter.rect_filled(frame, radius, p.bar);
     let image = view.shot.or(view.preview);
     if let Some(t) = image {
-        painter.image(
-            t.id(),
-            square,
-            Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-            widgets::PICTURE_TINT,
-        );
+        let (image_rect, uv) = super::preview_rects(frame.shrink(1.0), t.size_vec2(), false);
+        painter.image(t.id(), image_rect, uv, widgets::PICTURE_TINT);
     } else {
         painter.text(
-            square.center(),
+            frame.center(),
             Align2::CENTER_CENTER,
             aurora_i18n::tr!("ui-appearance-portrait-preparing"),
             egui::FontId::proportional(13.0),
@@ -427,14 +455,14 @@ fn preview(ui: &egui::Ui, p: &Palette, square: Rect, view: &View) {
     let line = egui::Stroke::new(1.0, p.ink.gamma_multiply(0.16));
     for i in 1..3 {
         let f = i as f32 / 3.0;
-        let x = square.left() + square.width() * f;
-        let y = square.top() + square.height() * f;
-        painter.line_segment([egui::pos2(x, square.top()), egui::pos2(x, square.bottom())], line);
-        painter.line_segment([egui::pos2(square.left(), y), egui::pos2(square.right(), y)], line);
+        let x = frame.left() + frame.width() * f;
+        let y = frame.top() + frame.height() * f;
+        painter.line_segment([egui::pos2(x, frame.top()), egui::pos2(x, frame.bottom())], line);
+        painter.line_segment([egui::pos2(frame.left(), y), egui::pos2(frame.right(), y)], line);
     }
     let corner = egui::Stroke::new(2.0, p.ink);
     let (inset, arm) = (12.0, 22.0);
-    let r = square.shrink(inset);
+    let r = frame.shrink(inset);
     for (at, dx, dy) in [
         (r.left_top(), 1.0, 1.0),
         (r.right_top(), -1.0, 1.0),
@@ -452,7 +480,7 @@ fn preview(ui: &egui::Ui, p: &Palette, square: Rect, view: &View) {
     };
     let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(11.0), p.ink);
     let pill = Rect::from_center_size(
-        egui::pos2(square.center().x, square.top() + 24.0),
+        egui::pos2(frame.center().x, frame.top() + 24.0),
         Vec2::new(galley.size().x + 32.0, 24.0),
     );
     painter.rect_filled(pill, radius, p.navy.gamma_multiply(0.7));

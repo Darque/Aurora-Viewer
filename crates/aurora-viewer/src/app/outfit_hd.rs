@@ -41,14 +41,14 @@ struct Job {
     outfit: Uuid,
     size: (u32, u32),
     pixels: Vec<u8>,
-    side: u32,
+    dimensions: (u32, u32),
     cost: i32,
     batch: bool,
 }
 
 struct Upload {
     outfit: Uuid,
-    side: u32,
+    dimensions: (u32, u32),
     cost: i32,
     batch: bool,
     step: Step,
@@ -83,15 +83,14 @@ impl OutfitHd {
 }
 
 impl App {
-    /// The HD picture of this side, now: its price and whether the balance
-    /// pays it.
-    pub(super) fn outfit_hd_offer(&self, side: u32) -> HdOffer {
-        portrait::hd_offer(self.outfit_hd_price(side), self.world.balance)
+    /// The offer for an aspect-preserving HD portrait.
+    pub(super) fn outfit_hd_offer_dimensions(&self, dimensions: (u32, u32)) -> HdOffer {
+        portrait::hd_offer(self.outfit_hd_price_dimensions(dimensions), self.world.balance)
     }
 
-    /// The price of one HD picture of this side (None: not known).
-    pub(super) fn outfit_hd_price(&self, side: u32) -> Option<i32> {
-        self.photo_prices().cost(Kind::Texture, (side, side))
+    /// The texture upload price for its actual width and height.
+    pub(super) fn outfit_hd_price_dimensions(&self, dimensions: (u32, u32)) -> Option<i32> {
+        self.photo_prices().cost(Kind::Texture, dimensions)
     }
 
     /// An HD picture is being encoded or sent, or waits for its turn.
@@ -100,18 +99,30 @@ impl App {
         hd.upload.is_some() || !hd.queue.is_empty()
     }
 
-    /// The confirmed photo (square, `size`) as the outfit's HD picture of
-    /// `side`, at the confirmed price: reduced and encoded on a worker, or
+    /// The confirmed photo (`size`) as an outfit HD picture of `dimensions`,
+    /// at the confirmed price: reduced and encoded on a worker, or
     /// queued behind the one on its way (`batch`: one of the batch
     /// portraits', counted for its summary).
-    pub(super) fn outfit_hd_start(&mut self, outfit: Uuid, size: (u32, u32), pixels: Vec<u8>, side: u32, cost: i32, batch: bool) {
-        log::info!("outfit HD picture: {side} x {side} for {outfit}, L$ {cost} confirmed");
+    pub(super) fn outfit_hd_start(
+        &mut self,
+        outfit: Uuid,
+        size: (u32, u32),
+        pixels: Vec<u8>,
+        dimensions: (u32, u32),
+        cost: i32,
+        batch: bool,
+    ) {
+        log::info!(
+            "outfit HD picture: {} x {} for {outfit}, L$ {cost} confirmed",
+            dimensions.0,
+            dimensions.1
+        );
         let hd = &mut self.inventory_images.hd;
         hd.queue.push_back(Job {
             outfit,
             size,
             pixels,
-            side,
+            dimensions,
             cost,
             batch,
         });
@@ -134,7 +145,7 @@ impl App {
             outfit,
             size,
             pixels,
-            side,
+            dimensions,
             cost,
             batch,
         } = job;
@@ -144,19 +155,22 @@ impl App {
             let encoded = image::RgbaImage::from_raw(size.0, size.1, pixels)
                 .ok_or_else(|| "photo pixels".to_owned())
                 .map(|image| {
-                    if image.dimensions() == (side, side) {
+                    if image.dimensions() == dimensions {
                         image
                     } else {
-                        image::imageops::resize(&image, side, side, image::imageops::FilterType::Lanczos3)
+                        image::imageops::resize(&image, dimensions.0, dimensions.1, image::imageops::FilterType::Lanczos3)
                     }
                 })
                 .and_then(|image| {
                     let rgba = image.into_raw();
-                    inventory::encode(side, side, &rgba, (side, side)).map(|data| (data, if batch { Vec::new() } else { rgba }))
+                    inventory::encode(dimensions.0, dimensions.1, &rgba, dimensions)
+                        .map(|data| (data, if batch { Vec::new() } else { rgba }))
                 });
             if let Ok((data, _)) = &encoded {
                 log::info!(
-                    "outfit HD picture: {side} x {side} encoded in {} ms ({} KB)",
+                    "outfit HD picture: {} x {} encoded in {} ms ({} KB)",
+                    dimensions.0,
+                    dimensions.1,
                     t0.elapsed().as_millis(),
                     data.len() >> 10
                 );
@@ -165,7 +179,7 @@ impl App {
         });
         hd.upload = Some(Upload {
             outfit,
-            side,
+            dimensions,
             cost,
             batch,
             step: Step::Encoding(rx),
@@ -298,7 +312,7 @@ impl App {
                 // (a batch's pictures are fetched when shown, rather than
                 // each kept on the GPU)
                 if !pixels.is_empty() {
-                    let image = egui::ColorImage::from_rgba_unmultiplied([up.side as usize, up.side as usize], &pixels);
+                    let image = egui::ColorImage::from_rgba_unmultiplied([up.dimensions.0 as usize, up.dimensions.1 as usize], &pixels);
                     let texture = self
                         .egui_ctx
                         .load_texture(format!("img-{asset}"), image, egui::TextureOptions::LINEAR);

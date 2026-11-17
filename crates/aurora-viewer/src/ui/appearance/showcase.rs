@@ -299,8 +299,8 @@ pub(super) fn show(
     }
 }
 
-/// The rail's rows: the three collections, then the folders of My Outfits
-/// with their menu, and "New folder…".
+/// The rail's rows: the collections, then My Outfits folders with their
+/// menu. Folder creation lives in the folders heading so it takes no row.
 #[allow(clippy::too_many_arguments)]
 fn rail_column(
     ui: &mut egui::Ui,
@@ -332,14 +332,22 @@ fn rail_column(
                 }
             }
             let groups: Vec<&Entry> = entries.iter().filter(|e| e.group).collect();
-            if !groups.is_empty() {
+            if let Some(my) = crate::world::outfit_folders::my_outfits(&world.inventory) {
                 ui.add_space(12.0);
-                ui.label(
-                    egui::RichText::new(aurora_i18n::tr!("ui-appearance-showcase-folders").to_uppercase())
-                        .size(11.0)
-                        .strong()
-                        .color(p.muted),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(aurora_i18n::tr!("ui-appearance-showcase-folders").to_uppercase())
+                            .size(11.0)
+                            .strong()
+                            .color(p.muted),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = aurora_i18n::tr!("ui-appearance-folders-new");
+                        if super::icon_button(ui, p, "folder-plus", label).clicked() {
+                            st.begin_new_folder(my, Vec::new());
+                        }
+                    });
+                });
                 ui.add_space(4.0);
             }
             for entry in groups {
@@ -350,20 +358,6 @@ fn rail_column(
                     st.showcase_state.filter = Filter::Folder(entry.id);
                 }
                 folders::group_menu(&response, p, world, st, entry.id, actions);
-            }
-            ui.add_space(8.0);
-            if let Some(my) = crate::world::outfit_folders::my_outfits(&world.inventory)
-                && widgets::action_button(
-                    ui,
-                    p,
-                    "folder-plus",
-                    aurora_i18n::tr!("ui-appearance-folders-new"),
-                    widgets::ActionKind::Flat,
-                    Vec2::new(ui.available_width(), 26.0),
-                )
-                .clicked()
-            {
-                st.begin_new_folder(my, Vec::new());
             }
         });
 }
@@ -735,7 +729,7 @@ fn hover_actions(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut Appeara
 /// folder and name, Wear / Add / Take off (Edit for the current outfit),
 /// and its items by kind.
 #[allow(clippy::too_many_arguments)]
-fn preview_panel(
+pub(super) fn preview_panel(
     ui: &mut egui::Ui,
     p: &Palette,
     world: &World,
@@ -755,20 +749,27 @@ fn preview_panel(
         rules
     });
     let side = ui.available_width();
-    let (picture, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
-    let radius = ui.visuals().window_corner_radius;
-    ui.painter().rect_filled(picture, radius, p.panel);
-    // the outfit's paid HD picture once it has loaded (`outfit_hd`), else
-    // its picture; the cards keep the thumbnail
+    // The private full-size portrait takes precedence, then the outfit's
+    // uploaded HD image, then its free square inventory thumbnail.
     let hd = model::outfit_hd_picture(inv, id);
     if let Some(hd) = hd {
         st.wanted_images.insert(hd);
     }
+    st.wanted_local_hd.insert(id);
     let image = st.outfit_picture(inv, id);
     if !image.is_nil() {
         st.wanted_images.insert(image);
     }
-    if let Some(t) = hd.and_then(|hd| images.get(&hd)).or_else(|| images.get(&image)) {
+    let local = st.local_hd_images.get(&id);
+    let uploaded = hd.and_then(|hd| images.get(&hd));
+    let thumbnail = images.get(&image);
+    let full = local.or(uploaded).or(thumbnail);
+    let aspect = full.map_or(1.0, |t| t.size_vec2().x / t.size_vec2().y.max(1.0));
+    let picture_height = side / aspect.max(0.1);
+    let (picture, _) = ui.allocate_exact_size(Vec2::new(side, picture_height), Sense::hover());
+    let radius = ui.visuals().window_corner_radius;
+    ui.painter().rect_filled(picture, radius, p.panel);
+    if let Some(t) = full {
         let (image_rect, uv) = super::preview_rects(picture.shrink(2.0), t.size_vec2(), st.fill_previews);
         ui.painter().image(t.id(), image_rect, uv, widgets::PICTURE_TINT);
     } else {
@@ -813,13 +814,9 @@ fn preview_panel(
             .id_salt(("showcase_picture_buttons", id)),
     );
     child.spacing_mut().item_spacing.x = 6.0;
-    for (icon, label, action) in [
-        ("photo-filled", aurora_i18n::tr!("common-image-2"), Action::OutfitImage(id)),
-        (
-            "camera-filled",
-            aurora_i18n::tr!("ui-appearance-portrait-photo-mode"),
-            Action::OutfitPhotoMode(id),
-        ),
+    for (icon, label) in [
+        ("photo-filled", aurora_i18n::tr!("common-image-2")),
+        ("camera-filled", aurora_i18n::tr!("ui-appearance-portrait-photo-mode")),
     ] {
         if child
             .add_enabled_ui(own, |ui| widgets::glass_action_icon(ui, p, icon, label, Vec2::splat(34.0), p.ink))
@@ -828,7 +825,11 @@ fn preview_panel(
             .clicked()
             && own
         {
-            actions.push(action);
+            if icon == "photo-filled" {
+                st.local_hd_detail = Some(id);
+            } else {
+                actions.push(Action::OutfitPhotoMode(id));
+            }
         }
     }
     let portrait = aurora_i18n::tr!("ui-appearance-portrait-auto");

@@ -930,7 +930,14 @@ mod tests {
                     frame(&ctx, &mut world, &mut st, vec![]);
                 }
                 let shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
-                let mut pos = shapes.iter().rev().find_map(|s| text_position(&s.shape, &label)).expect("outfit");
+                let mut pos = shapes
+                    .iter()
+                    .rev()
+                    .find_map(|s| {
+                        text_position(&s.shape, &label)
+                            .filter(|pos| tab == super::super::TAB_GALLERY || pos.x < super::super::showcase::OPEN_WIDTH - 300.0)
+                    })
+                    .expect("outfit");
                 if tab == super::super::TAB_GALLERY {
                     pos += egui::vec2(10.0, -50.0);
                 }
@@ -940,7 +947,12 @@ mod tests {
                 for _ in 0..4 {
                     shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
                 }
-                let position = |label: &str| shapes.iter().find_map(|s| text_position(&s.shape, label));
+                let position = |label: &str| {
+                    shapes.iter().find_map(|s| {
+                        text_position(&s.shape, label)
+                            .filter(|pos| tab == super::super::TAB_GALLERY || pos.x < super::super::showcase::OPEN_WIDTH - 300.0)
+                    })
+                };
                 let copy = position(aurora_i18n::tr!("inventory-copy-outfit-list"))
                     .unwrap_or_else(|| panic!("copy action in tab {tab}, outfit {id}, click {pos:?}"));
                 if let Some(delete) = position(aurora_i18n::tr!("ui-appearance-gallery-delete-outfit")) {
@@ -1021,7 +1033,7 @@ mod tests {
             let pos = shapes
                 .iter()
                 .rev()
-                .find_map(|s| text_position(&s.shape, &label))
+                .find_map(|s| text_position(&s.shape, &label).filter(|pos| pos.x < super::super::showcase::OPEN_WIDTH - 300.0))
                 .expect("outfit header");
             assert!(click(&ctx, &mut world, &mut st, pos, PointerButton::Secondary).is_empty());
             assert_eq!(st.outfit_selection.focus, Some(Uuid::from_u128(id)));

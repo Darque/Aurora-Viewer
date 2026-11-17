@@ -1108,8 +1108,13 @@ impl App {
         let window = renderer.size();
         let outfit = purpose.outfit();
         let full = if purpose == (Purpose::Portrait { preview: false }) {
-            // (the HD picture is chosen once the photo is shown)
-            (snapshot::portrait::SHOT_SIDE, snapshot::portrait::SHOT_SIDE)
+            // The longest edge is drawn at the largest HD choice; smaller
+            // HD pictures and the free square thumbnail come from it.
+            let side = snapshot::portrait::SHOT_SIDE;
+            self.outfit_portrait
+                .as_ref()
+                .filter(|session| session.kind == super::outfit_portrait::Kind::Studio)
+                .map_or((side, side), |session| session.settings.ratio.dimensions(side))
         } else if outfit {
             (OUTFIT_PHOTO_SIDE, OUTFIT_PHOTO_SIDE)
         } else {

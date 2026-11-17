@@ -9392,6 +9392,28 @@ impl App {
                 self.note_ui_copy(image);
             }
         }
+        let local_hd: Vec<_> = self.appearance_ui.wanted_local_hd.drain().collect();
+        for outfit in local_hd {
+            if !self.appearance_ui.local_hd_checked.insert(outfit) {
+                continue;
+            }
+            let path = crate::snapshot::portrait::local_image_path(self.world.agent_id, outfit);
+            match image::open(&path) {
+                Ok(image) => {
+                    let image = image.into_rgba8();
+                    let (width, height) = image.dimensions();
+                    let color = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], image.as_raw());
+                    let texture = self
+                        .egui_ctx
+                        .load_texture(format!("outfit-local-hd-{outfit}"), color, egui::TextureOptions::LINEAR);
+                    self.appearance_ui.local_hd_images.insert(outfit, texture);
+                }
+                Err(error) if path.exists() => {
+                    log::warn!("outfit portrait: local HD picture {outfit} could not be read: {error}");
+                }
+                Err(_) => {}
+            }
+        }
         self.update_inventory_hover_images(renderer);
     }
 

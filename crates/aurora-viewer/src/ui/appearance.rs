@@ -102,6 +102,14 @@ pub struct AppearanceUi {
     closed_groups: HashSet<Uuid>,
     closed_version: u64,
     pub wanted_images: HashSet<Uuid>,
+    /// Outfit ids whose account-local detailed portraits should be loaded.
+    pub wanted_local_hd: HashSet<Uuid>,
+    /// The local high-resolution portraits loaded from this account's data.
+    pub local_hd_images: HashMap<Uuid, egui::TextureHandle>,
+    /// The ids already checked on disk (including files that were absent).
+    pub local_hd_checked: HashSet<Uuid>,
+    /// Outfit whose detailed picture is open in the image viewer.
+    local_hd_detail: Option<Uuid>,
     /// What `prepare` walked at the last inventory change.
     prepared: Option<Prepared>,
     base_prepared: Option<BasePrepared>,
@@ -1399,6 +1407,70 @@ fn outfit_list(
     st.list_open = Some(open_now);
 }
 
+/// The list tabs keep their accordion rows, with the same outfit preview
+/// used by the showcase alongside them when there is room.
+fn outfit_list_with_preview(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    world: &World,
+    st: &mut AppearanceUi,
+    entries: &[Entry],
+    outfits: &[Uuid],
+    current: Option<Uuid>,
+    actions: &mut Vec<Action>,
+    images: &HashMap<Uuid, egui::TextureHandle>,
+    height: f32,
+) {
+    let width = ui.available_width();
+    let panel_height = height + 16.0;
+    let (area, _) = ui.allocate_exact_size(Vec2::new(width, panel_height), egui::Sense::hover());
+    let preview_width = 300.0_f32.min(area.width() * 0.42);
+    let gap = 10.0;
+    let list = egui::Rect::from_min_max(area.min, egui::pos2(area.right() - preview_width - gap, area.bottom()));
+    let preview = egui::Rect::from_min_max(egui::pos2(list.right() + gap, area.top()), area.max);
+    let radius = ui.visuals().window_corner_radius;
+    ui.painter().rect_filled(list, radius, p.field.gamma_multiply(0.65));
+    ui.painter().rect_filled(preview, radius, p.field);
+    let mut list_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(list.shrink(8.0))
+            .id_salt("appearance_outfit_list_split"),
+    );
+    clipboard::list_focus(&mut list_ui, list);
+    egui::ScrollArea::vertical()
+        .id_salt("appearance_list_with_preview")
+        .max_height(height)
+        .min_scrolled_height(height)
+        .auto_shrink([false, false])
+        .show(&mut list_ui, |ui| {
+            ui.add_enabled_ui(st.pending.is_none(), |ui| {
+                outfit_list(ui, p, world, st, entries, outfits, current, actions);
+            });
+        });
+    let mut preview_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(preview.shrink(12.0))
+            .id_salt("appearance_outfit_preview"),
+    );
+    let picked = st
+        .outfit_selection
+        .focus
+        .filter(|id| outfits.contains(id))
+        .or(current.filter(|id| outfits.contains(&id)));
+    egui::ScrollArea::vertical()
+        .id_salt("appearance_outfit_preview_scroll")
+        .auto_shrink([false, false])
+        .show(&mut preview_ui, |ui| match picked {
+            Some(id) => showcase::preview_panel(ui, p, world, st, id, actions, images),
+            None => {
+                ui.add_space(24.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(aurora_i18n::tr!("ui-appearance-showcase-pick")).color(p.muted));
+                });
+            }
+        });
+}
+
 fn worn_list(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceUi, actions: &mut Vec<Action>, edit: bool) {
     let inv = &world.inventory;
     let mut links = model::cof(inv).map(|id| model::folder_links(inv, id)).unwrap_or_default();
@@ -1813,7 +1885,7 @@ pub fn show(
     if *open {
         st.read_pictures(world);
     }
-    if *open && st.showcase && !st.editing && st.tab == TAB_GALLERY {
+    if *open && !st.editing && (st.tab == TAB_BASES || st.tab == TAB_OUTFITS || (st.showcase && st.tab == TAB_GALLERY)) {
         showcase::widen_once(ctx);
     }
     if *open && !st.editing && st.tab == TAB_WORN {
@@ -1994,9 +2066,17 @@ pub fn show(
         let list_top = ui.cursor().top();
         let height = (ui.available_height() - reserved).max(100.0);
         let showcase = st.showcase && !st.editing && st.tab == TAB_GALLERY;
+        let outfit_preview = !st.editing && matches!(st.tab, TAB_BASES | TAB_OUTFITS) && showcase::previews(ui.available_width());
         if showcase {
             // the framed list's height: its own and its margins
             showcase::show(ui, p, world, st, &entries, &outfits, base, &mut actions, images, height + 16.0);
+        } else if outfit_preview {
+            let current = if st.tab == TAB_BASES {
+                st.base_sets.data.active.as_ref().map(|base| base.folder)
+            } else {
+                base
+            };
+            outfit_list_with_preview(ui, p, world, st, &entries, &outfits, current, &mut actions, images, height);
         } else {
             egui::Frame::new()
                 .fill(p.field.gamma_multiply(0.65))
@@ -2079,7 +2159,10 @@ pub fn show(
             });
         }
         // the showcase's preview stands for the selection's card
-        if !st.editing && matches!(st.tab, TAB_GALLERY | TAB_OUTFITS) && !(showcase && showcase::previews(ui.available_width())) {
+        if !st.editing
+            && matches!(st.tab, TAB_GALLERY | TAB_OUTFITS)
+            && !((showcase || outfit_preview) && showcase::previews(ui.available_width()))
+        {
             widgets::surface(ui, p, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -2254,6 +2337,7 @@ pub fn show(
             ui.ctx().request_discard("appearance rows below the list changed height");
         }
     });
+    local_hd_window(ctx, p, &world.inventory, st, images);
     if let Some(mut name) = st.save_as.clone() {
         let mut close = false;
         let response = crate::ui::widgets::Modal::new(egui::Id::unique("outfit_save_as")).show(ctx, |ui| {
@@ -2310,6 +2394,60 @@ pub fn show(
     folders::dialogs(ctx, p, world, st, &mut actions);
     gallery::finish_copy(ctx, world, st);
     actions
+}
+
+/// The preview image button opens this full-size, read-only view. Its local
+/// PNG stays in account data; a grid HD picture or thumbnail is the fallback.
+fn local_hd_window(
+    ctx: &egui::Context,
+    p: &Palette,
+    inv: &crate::world::inventory::Inventory,
+    st: &mut AppearanceUi,
+    images: &HashMap<Uuid, egui::TextureHandle>,
+) {
+    let Some(id) = st.local_hd_detail else {
+        return;
+    };
+    let Some(folder) = inv.folders.get(&id) else {
+        st.local_hd_detail = None;
+        return;
+    };
+    st.wanted_local_hd.insert(id);
+    let hd = model::outfit_hd_picture(inv, id);
+    if let Some(hd) = hd {
+        st.wanted_images.insert(hd);
+    }
+    let thumbnail = st.outfit_picture(inv, id);
+    if !thumbnail.is_nil() {
+        st.wanted_images.insert(thumbnail);
+    }
+    let texture = st
+        .local_hd_images
+        .get(&id)
+        .or_else(|| hd.and_then(|image| images.get(&image)))
+        .or_else(|| images.get(&thumbnail));
+    let name = crate::world::base_outfits::display_name(inv, id).unwrap_or(&folder.info.name);
+    let mut open = true;
+    let mut floater = widgets::Floater::new("appearance_local_hd", name, egui::pos2(260.0, 110.0), Vec2::new(700.0, 780.0));
+    floater.min_size = Vec2::new(380.0, 440.0);
+    floater.show(ctx, p, &mut open, |ui| {
+        let (area, _) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+        if let Some(texture) = texture {
+            let (image, uv) = preview_rects(area.shrink(6.0), texture.size_vec2(), false);
+            ui.painter().image(texture.id(), image, uv, widgets::PICTURE_TINT);
+        } else {
+            ui.painter().text(
+                area.center(),
+                egui::Align2::CENTER_CENTER,
+                aurora_i18n::tr!("ui-appearance-portrait-preparing"),
+                egui::FontId::proportional(14.0),
+                p.muted,
+            );
+        }
+    });
+    if !open {
+        st.local_hd_detail = None;
+    }
 }
 
 /// "Save in": the folder of My Outfits that takes the new outfit, offered
@@ -2865,7 +3003,11 @@ mod tests {
         let pos = draw_output(ctx, world, st, input)
             .1
             .iter()
-            .filter_map(|s| text_position(&s.shape, &name).map(|pos| (s.clip_rect.height(), pos)))
+            .filter_map(|s| {
+                text_position(&s.shape, &name)
+                    .filter(|pos| st.tab == TAB_GALLERY || pos.x < showcase::OPEN_WIDTH - 300.0)
+                    .map(|pos| (s.clip_rect.height(), pos))
+            })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .expect("outfit row/tile")
             .1;
@@ -2992,6 +3134,14 @@ mod tests {
         }
     }
 
+    fn exact_text_position(shape: &egui::Shape, label: &str) -> Option<egui::Pos2> {
+        match shape {
+            egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos + egui::vec2(3.0, 5.0)),
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| exact_text_position(s, label)),
+            _ => None,
+        }
+    }
+
     fn label_position(ctx: &egui::Context, world: &mut World, st: &mut AppearanceUi, label: &str) -> egui::Pos2 {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1600.0, 900.0))),
@@ -3000,7 +3150,7 @@ mod tests {
         draw_output(ctx, world, st, input)
             .1
             .iter()
-            .find_map(|s| text_position(&s.shape, label))
+            .find_map(|s| text_position(&s.shape, label).filter(|pos| st.tab == TAB_GALLERY || pos.x < showcase::OPEN_WIDTH - 300.0))
             .expect(label)
     }
 
@@ -3016,8 +3166,8 @@ mod tests {
         draw_output(ctx, world, st, input)
             .1
             .iter()
-            .filter(|s| s.clip_rect.contains_rect(screen))
-            .find_map(|s| text_position(&s.shape, label))
+            .rev()
+            .find_map(|s| exact_text_position(&s.shape, label).filter(|pos| st.tab == TAB_GALLERY || pos.x < showcase::OPEN_WIDTH - 300.0))
             .expect(label)
     }
 
