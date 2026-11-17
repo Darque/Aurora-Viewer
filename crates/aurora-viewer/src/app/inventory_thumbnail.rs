@@ -238,7 +238,7 @@ impl App {
         self.appearance_ui.message.clear();
         self.inventory_images.outfit = Some(request);
         self.inventory_images.requests.insert(request, outfit);
-        self.prepare_inventory_photo(request, w, h, pixels);
+        self.prepare_inventory_photo(request, w, h, pixels, true);
         true
     }
 
@@ -264,12 +264,12 @@ impl App {
             self.photo_job(super::snapshot::Purpose::Outfit(request), renderer);
         }
     }
-    pub(super) fn prepare_inventory_photo(&mut self, request: Uuid, w: u32, h: u32, pixels: Vec<u8>) {
+    pub(super) fn prepare_inventory_photo(&mut self, request: Uuid, w: u32, h: u32, pixels: Vec<u8>, fit_portrait: bool) {
         let tx = self.inventory_images.tx.clone();
         std::thread::spawn(move || {
             let result = image::RgbaImage::from_raw(w, h, pixels)
                 .ok_or_else(|| aurora_i18n::tr!("app-inventory-thumbnail-invalid-capture").to_owned())
-                .and_then(|image| square(&image))
+                .and_then(|image| if fit_portrait { square_contain(&image) } else { square(&image) })
                 .map(|image| Some(Prepared::Photo(image.into_raw())));
             let _ = tx.send(Reply { request, result });
         });
@@ -449,6 +449,22 @@ fn square(image: &image::RgbaImage) -> Result<image::RgbaImage, String> {
     }
     let crop = image::imageops::crop_imm(image, (image.width() - edge) / 2, (image.height() - edge) / 2, edge, edge).to_image();
     Ok(image::imageops::resize(&crop, 256, 256, image::imageops::FilterType::Lanczos3))
+}
+
+/// A portrait's free grid thumbnail is square, but it keeps the entire
+/// captured frame visible instead of cropping off the head or feet.
+fn square_contain(image: &image::RgbaImage) -> Result<image::RgbaImage, String> {
+    let edge = image.width().max(image.height());
+    if edge == 0 {
+        return Err(aurora_i18n::tr!("app-inventory-thumbnail-the-image-is-empty").into());
+    }
+    let scale = 256.0 / edge as f32;
+    let width = (image.width() as f32 * scale).round().max(1.0) as u32;
+    let height = (image.height() as f32 * scale).round().max(1.0) as u32;
+    let fitted = image::imageops::resize(image, width, height, image::imageops::FilterType::Lanczos3);
+    let mut output = image::RgbaImage::from_pixel(256, 256, image::Rgba([0, 0, 0, 0]));
+    image::imageops::overlay(&mut output, &fitted, i64::from((256 - width) / 2), i64::from((256 - height) / 2));
+    Ok(output)
 }
 fn rgba(data: &[u8]) -> Result<image::RgbaImage, String> {
     let info = aurora_assets::j2k_info(data)
@@ -743,5 +759,16 @@ mod tests {
         let photo = square(&image).expect("square");
         assert_eq!(photo.dimensions(), (256, 256));
         assert_eq!(photo.get_pixel(0, 0), &image::Rgba([10, 20, 30, 128]));
+    }
+
+    #[test]
+    fn outfit_portrait_thumbnail_fits_the_full_frame_without_cropping() {
+        let source = image::RgbaImage::from_pixel(615, 1024, image::Rgba([40, 80, 120, 255]));
+        let thumb = square_contain(&source).expect("thumbnail");
+        assert_eq!(thumb.dimensions(), (256, 256));
+        assert_eq!(thumb.get_pixel(128, 0), &image::Rgba([40, 80, 120, 255]));
+        assert_eq!(thumb.get_pixel(128, 255), &image::Rgba([40, 80, 120, 255]));
+        assert_eq!(thumb.get_pixel(0, 128), &image::Rgba([0, 0, 0, 0]));
+        assert_eq!(thumb.get_pixel(255, 128), &image::Rgba([0, 0, 0, 0]));
     }
 }

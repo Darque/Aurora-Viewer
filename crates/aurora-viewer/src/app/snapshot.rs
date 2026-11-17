@@ -805,7 +805,7 @@ impl App {
             Purpose::Postcard => self.photo_postcard(job.size, job.pixels, job.cutout),
             Purpose::Outfit(request) => {
                 self.inventory_images.photo = None;
-                self.prepare_inventory_photo(request, job.size.0, job.size.1, job.pixels);
+                self.prepare_inventory_photo(request, job.size.0, job.size.1, job.pixels, false);
             }
             Purpose::Portrait { preview } => self.outfit_portrait_drawn(preview, job.size, job.pixels, job.cutout),
         }
@@ -1107,14 +1107,13 @@ impl App {
     pub(super) fn photo_job(&mut self, purpose: Purpose, renderer: &Renderer) {
         let window = renderer.size();
         let outfit = purpose.outfit();
-        let full = if purpose == (Purpose::Portrait { preview: false }) {
-            // The longest edge is drawn at the largest HD choice; smaller
-            // HD pictures and the free square thumbnail come from it.
-            let side = snapshot::portrait::SHOT_SIDE;
-            self.outfit_portrait
-                .as_ref()
-                .filter(|session| session.kind == super::outfit_portrait::Kind::Studio)
-                .map_or((side, side), |session| session.settings.ratio.dimensions(side))
+        let studio_ratio = self
+            .outfit_portrait
+            .as_ref()
+            .filter(|session| session.kind == super::outfit_portrait::Kind::Studio)
+            .map(|session| session.settings.ratio);
+        let full = if let Some(size) = portrait_full_size(&purpose, studio_ratio) {
+            size
         } else if outfit {
             (OUTFIT_PHOTO_SIDE, OUTFIT_PHOTO_SIDE)
         } else {
@@ -3140,6 +3139,34 @@ LUT_3D_SIZE {n}
             self.snapshots.ui.destination = Destination::Disk;
             self.photo_action(Action::Take, renderer);
         }
+    }
+}
+
+/// The live studio preview and the confirmed image use the same framing
+/// ratio. The viewfinder remains square, as it is a separate photo mode.
+fn portrait_full_size(purpose: &Purpose, studio_ratio: Option<snapshot::portrait::Ratio>) -> Option<(u32, u32)> {
+    match (purpose, studio_ratio) {
+        (Purpose::Portrait { .. }, Some(ratio)) => Some(ratio.dimensions(snapshot::portrait::SHOT_SIDE)),
+        (Purpose::Portrait { preview: false }, None) => Some((snapshot::portrait::SHOT_SIDE, snapshot::portrait::SHOT_SIDE)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod portrait_size_tests {
+    use super::*;
+
+    #[test]
+    fn studio_preview_and_shutter_share_the_selected_portrait_dimensions() {
+        let ratio = snapshot::portrait::Ratio::Portrait;
+        let size = ratio.dimensions(snapshot::portrait::SHOT_SIDE);
+        assert_eq!(portrait_full_size(&Purpose::Portrait { preview: true }, Some(ratio)), Some(size));
+        assert_eq!(portrait_full_size(&Purpose::Portrait { preview: false }, Some(ratio)), Some(size));
+        assert_eq!(
+            portrait_full_size(&Purpose::Portrait { preview: false }, None),
+            Some((snapshot::portrait::SHOT_SIDE, snapshot::portrait::SHOT_SIDE))
+        );
+        assert_eq!(portrait_full_size(&Purpose::Preview, Some(ratio)), None);
     }
 }
 

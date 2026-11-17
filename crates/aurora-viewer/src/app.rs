@@ -4582,6 +4582,7 @@ impl App {
 
     /// Mouse motion: mouselook, camera drags (steering, Alt), right drag orbit.
     fn camera_mouse_delta(&mut self, dx: f32, dy: f32) {
+        let camera_gesture = (self.camera.mouselook() && !self.alt_cursor.free()) || self.mouse_mode != MouseMode::None || self.right_drag;
         let before = (self.camera.position, self.camera.target, self.camera.orbit_yaw);
         let camera_settings = self.settings.camera.clone();
         let agent_angles = (self.world.agent.yaw, self.world.agent.pitch);
@@ -4592,7 +4593,7 @@ impl App {
             || self.settings.camera != camera_settings
             || (self.world.agent.yaw - agent_angles.0).abs() > 1e-5
             || (self.world.agent.pitch - agent_angles.1).abs() > 1e-5;
-        if changed {
+        if changed || (camera_gesture && (dx != 0.0 || dy != 0.0)) {
             self.note_outfit_portrait_camera_adjusted();
         }
     }
@@ -8227,7 +8228,7 @@ impl App {
             || self.camera.target.distance(before.1) > 1e-5
             || (self.camera.orbit_yaw - before.2).abs() > 1e-5
             || self.settings.camera != camera_settings;
-        if changed {
+        if changed || (clicks.is_finite() && clicks != 0.0) {
             self.note_outfit_portrait_camera_adjusted();
         }
     }
@@ -13866,7 +13867,7 @@ impl App {
             && let Some((w, h, pixels)) = gfx.renderer.captured.take()
             && let Some(request) = self.inventory_images.capturing.take()
         {
-            self.prepare_inventory_photo(request, w, h, pixels);
+            self.prepare_inventory_photo(request, w, h, pixels, false);
         }
         if self.scene_capture_pending
             && let Some((w, h, px)) = gfx.renderer.captured.take()

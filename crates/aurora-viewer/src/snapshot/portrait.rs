@@ -566,6 +566,10 @@ mod tests {
         let round_trip: PortraitSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert_eq!(round_trip.camera_presets, settings.camera_presets);
 
+        settings.keep = true;
+        let kept: PortraitSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(PortraitSettings::opening(&kept).camera_presets, settings.camera_presets);
+
         settings.keep = false;
         let opened = PortraitSettings::opening(&settings);
         assert_eq!(opened.framing, Framing::Body);

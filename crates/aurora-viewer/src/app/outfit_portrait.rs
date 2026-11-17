@@ -383,7 +383,11 @@ impl App {
             s.reframe = Some(Instant::now() + REFRAME);
             s.sun_due = true;
         }
-        if s.manual_camera_pending.is_some_and(|frame| self.frame_count > frame)
+        // Camera input is accumulated before Camera::update later in the
+        // frame. Leave one full update between detecting the drag and
+        // measuring it, or the saved preset is the untouched default view.
+        if s.manual_camera_pending
+            .is_some_and(|frame| self.frame_count > frame.saturating_add(1))
             && let Some(j) = &joints
         {
             let current_view = (self.camera.position, self.camera.target);

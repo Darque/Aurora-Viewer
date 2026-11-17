@@ -749,8 +749,9 @@ fn icon(ui: &mut egui::Ui, name: &str, size: f32, color: egui::Color32) {
 }
 
 fn icon_button(ui: &mut egui::Ui, p: &Palette, name: &str, tip: &str) -> egui::Response {
+    let icon_size = if name == "plus" { 11.0 } else { 16.0 };
     let button = if let Some(t) = icons::global(name) {
-        egui::Button::image(egui::Image::new(&t).fit_to_exact_size(Vec2::splat(16.0)).tint(p.ink))
+        egui::Button::image(egui::Image::new(&t).fit_to_exact_size(Vec2::splat(icon_size)).tint(p.ink))
     } else {
         egui::Button::new("·")
     };

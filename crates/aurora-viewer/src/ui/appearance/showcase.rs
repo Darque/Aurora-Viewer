@@ -765,7 +765,9 @@ pub(super) fn preview_panel(
     let thumbnail = images.get(&image);
     let full = local.or(uploaded).or(thumbnail);
     let aspect = full.map_or(1.0, |t| t.size_vec2().x / t.size_vec2().y.max(1.0));
-    let picture_height = side / aspect.max(0.1);
+    // Reserve the same 44 points the action row used to overlay, so moving
+    // it below the image does not push the rest of the preview out of view.
+    let picture_height = (side / aspect.max(0.1) - 44.0).max(120.0);
     let (picture, _) = ui.allocate_exact_size(Vec2::new(side, picture_height), Sense::hover());
     let radius = ui.visuals().window_corner_radius;
     ui.painter().rect_filled(picture, radius, p.panel);
@@ -801,12 +803,10 @@ pub(super) fn preview_panel(
     ui.painter()
         .rect_stroke(picture, radius, egui::Stroke::new(1.0, p.raised), egui::StrokeKind::Inside);
     let own = rules.is_some_and(|r| r.folder);
-    // the auto portrait, the square photo mode and an image of the
-    // inventory, along the bottom of the picture
-    let buttons = Rect::from_min_max(
-        egui::pos2(picture.left() + 10.0, picture.bottom() - 46.0),
-        picture.max - Vec2::new(10.0, 10.0),
-    );
+    // Keep the actions below the image so full-body portraits retain their
+    // feet in the preview.
+    ui.add_space(8.0);
+    let (buttons, _) = ui.allocate_exact_size(Vec2::new(side, 36.0), Sense::hover());
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(buttons)
