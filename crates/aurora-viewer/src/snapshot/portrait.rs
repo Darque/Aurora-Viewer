@@ -27,8 +27,10 @@ pub enum Framing {
 pub enum Ratio {
     #[default]
     Square,
-    TwoThree,
-    ThreeFive,
+    /// The tall portrait formerly offered as 3:5. Older saved choices using
+    /// either portrait ratio are read as this supported portrait shape.
+    #[serde(alias = "TwoThree", alias = "ThreeFive")]
+    Portrait,
 }
 
 impl Ratio {
@@ -36,17 +38,54 @@ impl Ratio {
     pub fn dimensions(self, long_side: u32) -> (u32, u32) {
         match self {
             Self::Square => (long_side, long_side),
-            Self::TwoThree => (long_side.saturating_mul(2).div_ceil(3), long_side),
-            Self::ThreeFive => (long_side.saturating_mul(3).div_ceil(5), long_side),
+            Self::Portrait => (long_side.saturating_mul(3).div_ceil(5), long_side),
         }
     }
 
     pub fn aspect(self) -> f32 {
         match self {
             Self::Square => 1.0,
-            Self::TwoThree => 2.0 / 3.0,
-            Self::ThreeFive => 3.0 / 5.0,
+            Self::Portrait => 3.0 / 5.0,
         }
+    }
+}
+
+/// A camera adjustment saved relative to the automatically framed view.
+/// Each pair of offsets is in the automatic camera's right/up/back basis,
+/// so it follows the avatar when its position or facing changes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CameraAdjustment {
+    eye: [f32; 3],
+    target: [f32; 3],
+    saved: bool,
+}
+
+impl CameraAdjustment {
+    fn basis(eye: Vec3, target: Vec3) -> (Vec3, Vec3, Vec3) {
+        let back = (eye - target).normalize_or(Vec3::X);
+        let right = Vec3::Z.cross(back).normalize_or(Vec3::Y);
+        let up = back.cross(right).normalize_or(Vec3::Z);
+        (right, up, back)
+    }
+
+    pub fn from_views(base_eye: Vec3, base_target: Vec3, eye: Vec3, target: Vec3) -> Self {
+        let (right, up, back) = Self::basis(base_eye, base_target);
+        let local = |delta: Vec3| [delta.dot(right), delta.dot(up), delta.dot(back)];
+        Self {
+            eye: local(eye - base_eye),
+            target: local(target - base_target),
+            saved: true,
+        }
+    }
+
+    fn apply(self, base_eye: Vec3, base_target: Vec3) -> (Vec3, Vec3) {
+        if !self.saved {
+            return (base_eye, base_target);
+        }
+        let (right, up, back) = Self::basis(base_eye, base_target);
+        let world = |v: [f32; 3]| right * v[0] + up * v[1] + back * v[2];
+        (base_eye + world(self.eye), base_target + world(self.target))
     }
 }
 
@@ -94,7 +133,7 @@ pub enum Lighting {
 
 /// The portrait's choices; kept in the settings when "Keep these settings"
 /// is on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PortraitSettings {
     pub framing: Framing,
@@ -114,6 +153,9 @@ pub struct PortraitSettings {
     /// The same larger picture saved as a local PNG instead of uploaded.
     pub hd_local: bool,
     pub hd_side: HdSide,
+    /// Camera offsets for each Framing, Image ratio, Pose and Angle choice.
+    /// The 27 slots in each ratio are framed by Framing × Pose × Angle.
+    pub camera_presets: [[CameraAdjustment; 27]; 2],
 }
 
 /// The paid HD picture (the user's choice, 2026-11-10): besides the free
@@ -216,6 +258,7 @@ impl Default for PortraitSettings {
             hd: false,
             hd_local: false,
             hd_side: HdSide::Side512,
+            camera_presets: [[CameraAdjustment::default(); 27]; 2],
         }
     }
 }
@@ -232,9 +275,47 @@ impl PortraitSettings {
                 hd: saved.hd,
                 hd_local: saved.hd_local,
                 hd_side: saved.hd_side,
+                camera_presets: saved.camera_presets,
                 ..Self::default()
             }
         }
+    }
+
+    fn camera_preset_index(&self) -> (usize, usize) {
+        let ratio = match self.ratio {
+            Ratio::Square => 0,
+            Ratio::Portrait => 1,
+        };
+        let framing = match self.framing {
+            Framing::Body => 0,
+            Framing::Bust => 1,
+            Framing::Face => 2,
+        };
+        let pose = match self.pose {
+            Pose::A => 0,
+            Pose::ArmsDown => 1,
+            Pose::Current => 2,
+        };
+        let angle = match self.angle {
+            Angle::Front => 0,
+            Angle::ThreeQuarter => 1,
+            Angle::Profile => 2,
+        };
+        (ratio, framing * 9 + pose * 3 + angle)
+    }
+
+    pub fn camera_adjustment(&self) -> CameraAdjustment {
+        let (ratio, index) = self.camera_preset_index();
+        self.camera_presets[ratio][index]
+    }
+
+    pub fn save_camera_adjustment(&mut self, adjustment: CameraAdjustment) {
+        let (ratio, index) = self.camera_preset_index();
+        self.camera_presets[ratio][index] = adjustment;
+    }
+
+    pub fn reset_camera_adjustment(&mut self) {
+        self.save_camera_adjustment(CameraAdjustment::default());
     }
 }
 
@@ -380,6 +461,13 @@ pub fn frame_for_aspect(j: &Joints, framing: Framing, angle: Angle, fov: f32, as
     (target + toward * distance, target)
 }
 
+/// The automatic view plus the user's saved adjustment for this exact set
+/// of framing, ratio, pose and angle choices.
+pub fn frame_for_settings(j: &Joints, settings: &PortraitSettings, fov: f32) -> (Vec3, Vec3) {
+    let (eye, target) = frame_for_aspect(j, settings.framing, settings.angle, fov, settings.ratio.aspect());
+    settings.camera_adjustment().apply(eye, target)
+}
+
 /// Account-local detail pictures use outfit UUIDs rather than inventory
 /// item IDs, since they are kept on this device and never uploaded.
 pub fn local_image_path(agent: uuid::Uuid, outfit: uuid::Uuid) -> std::path::PathBuf {
@@ -442,20 +530,58 @@ mod tests {
     #[test]
     fn portrait_ratios_use_the_selected_long_edge() {
         assert_eq!(Ratio::Square.dimensions(1024), (1024, 1024));
-        assert_eq!(Ratio::TwoThree.dimensions(1024), (683, 1024));
-        assert_eq!(Ratio::ThreeFive.dimensions(1024), (615, 1024));
+        assert_eq!(Ratio::Portrait.dimensions(1024), (615, 1024));
+        assert_eq!(serde_json::from_str::<Ratio>("\"TwoThree\"").unwrap(), Ratio::Portrait);
+        assert_eq!(serde_json::from_str::<Ratio>("\"ThreeFive\"").unwrap(), Ratio::Portrait);
     }
 
     #[test]
     fn tall_portrait_frame_uses_less_camera_distance_than_square() {
         let j = standing();
         let square = frame(&j, Framing::Body, Angle::Front, 1.0);
-        let tall = frame_for_aspect(&j, Framing::Body, Angle::Front, 1.0, Ratio::ThreeFive.aspect());
+        let tall = frame_for_aspect(&j, Framing::Body, Angle::Front, 1.0, Ratio::Portrait.aspect());
         let t = (1.0_f32 * 0.5).tan();
         let avatar_width = 1.44; // hands plus the portrait's small hand margin
         let square_fill = avatar_width / (2.0 * square.0.distance(square.1) * t);
-        let tall_fill = avatar_width / (2.0 * tall.0.distance(tall.1) * t * Ratio::ThreeFive.aspect());
+        let tall_fill = avatar_width / (2.0 * tall.0.distance(tall.1) * t * Ratio::Portrait.aspect());
         assert!(tall_fill > square_fill, "the tall frame should use more of its narrower width");
+    }
+
+    #[test]
+    fn camera_adjustments_are_keyed_and_survive_unkept_choices() {
+        let mut settings = PortraitSettings {
+            framing: Framing::Bust,
+            ratio: Ratio::Portrait,
+            pose: Pose::ArmsDown,
+            angle: Angle::Profile,
+            ..Default::default()
+        };
+        let base_eye = Vec3::new(2.0, 1.0, 2.0);
+        let base_target = Vec3::new(0.0, 0.0, 1.0);
+        let eye = base_eye + Vec3::new(0.4, 0.2, -0.1);
+        let target = base_target + Vec3::new(-0.1, 0.3, 0.2);
+        settings.save_camera_adjustment(CameraAdjustment::from_views(base_eye, base_target, eye, target));
+        let (saved_eye, saved_target) = settings.camera_adjustment().apply(base_eye, base_target);
+        assert!(saved_eye.distance(eye) < 1e-5 && saved_target.distance(target) < 1e-5);
+        let round_trip: PortraitSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(round_trip.camera_presets, settings.camera_presets);
+
+        settings.keep = false;
+        let opened = PortraitSettings::opening(&settings);
+        assert_eq!(opened.framing, Framing::Body);
+        assert_eq!(opened.camera_presets, settings.camera_presets);
+        let mut same_key = opened;
+        same_key.framing = Framing::Bust;
+        same_key.ratio = Ratio::Portrait;
+        same_key.pose = Pose::ArmsDown;
+        same_key.angle = Angle::Profile;
+        let (restored_eye, restored_target) = same_key.camera_adjustment().apply(base_eye, base_target);
+        assert!(restored_eye.distance(eye) < 1e-5 && restored_target.distance(target) < 1e-5);
+
+        same_key.reset_camera_adjustment();
+        assert_eq!(same_key.camera_adjustment(), CameraAdjustment::default());
+        assert_eq!(same_key.camera_adjustment().apply(base_eye, base_target), (base_eye, base_target));
+        assert_ne!(settings.camera_adjustment(), CameraAdjustment::default());
     }
 
     #[test]

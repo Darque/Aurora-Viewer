@@ -4582,6 +4582,22 @@ impl App {
 
     /// Mouse motion: mouselook, camera drags (steering, Alt), right drag orbit.
     fn camera_mouse_delta(&mut self, dx: f32, dy: f32) {
+        let before = (self.camera.position, self.camera.target, self.camera.orbit_yaw);
+        let camera_settings = self.settings.camera.clone();
+        let agent_angles = (self.world.agent.yaw, self.world.agent.pitch);
+        self.camera_mouse_delta_impl(dx, dy);
+        let changed = self.camera.position.distance(before.0) > 1e-5
+            || self.camera.target.distance(before.1) > 1e-5
+            || (self.camera.orbit_yaw - before.2).abs() > 1e-5
+            || self.settings.camera != camera_settings
+            || (self.world.agent.yaw - agent_angles.0).abs() > 1e-5
+            || (self.world.agent.pitch - agent_angles.1).abs() > 1e-5;
+        if changed {
+            self.note_outfit_portrait_camera_adjusted();
+        }
+    }
+
+    fn camera_mouse_delta_impl(&mut self, dx: f32, dy: f32) {
         if self.studio_transition.busy() {
             return;
         }
@@ -8204,6 +8220,19 @@ impl App {
     /// Wheel clicks on the world (SL sign: positive zooms out): the held
     /// mouselook zoom's angle, or the camera's own use of the wheel.
     fn camera_wheel(&mut self, clicks: f32) {
+        let before = (self.camera.position, self.camera.target, self.camera.orbit_yaw);
+        let camera_settings = self.settings.camera.clone();
+        self.camera_wheel_impl(clicks);
+        let changed = self.camera.position.distance(before.0) > 1e-5
+            || self.camera.target.distance(before.1) > 1e-5
+            || (self.camera.orbit_yaw - before.2).abs() > 1e-5
+            || self.settings.camera != camera_settings;
+        if changed {
+            self.note_outfit_portrait_camera_adjusted();
+        }
+    }
+
+    fn camera_wheel_impl(&mut self, clicks: f32) {
         if self.avatar_studio.active && !self.viewfinder_on() {
             return;
         }

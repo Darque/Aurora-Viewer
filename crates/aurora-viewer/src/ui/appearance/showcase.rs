@@ -343,7 +343,7 @@ fn rail_column(
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let label = aurora_i18n::tr!("ui-appearance-folders-new");
-                        if super::icon_button(ui, p, "folder-plus", label).clicked() {
+                        if super::icon_button(ui, p, "plus", label).clicked() {
                             st.begin_new_folder(my, Vec::new());
                         }
                     });

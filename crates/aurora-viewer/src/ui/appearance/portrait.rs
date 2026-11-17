@@ -38,6 +38,8 @@ pub enum Action {
     Reframe,
     Pose,
     Studio,
+    /// Clear the camera adjustment for the current framing choices.
+    ResetCamera,
     /// The HD picture's price confirmed: the photo is used, and sent.
     ConfirmHd,
     /// Back to the photo, nothing paid.
@@ -82,7 +84,7 @@ pub struct View<'a> {
 }
 
 const FRAMINGS: [Framing; 3] = [Framing::Body, Framing::Bust, Framing::Face];
-const RATIOS: [Ratio; 3] = [Ratio::Square, Ratio::TwoThree, Ratio::ThreeFive];
+const RATIOS: [Ratio; 2] = [Ratio::Square, Ratio::Portrait];
 const POSES: [Pose; 3] = [Pose::A, Pose::ArmsDown, Pose::Current];
 const ANGLES: [Angle; 3] = [Angle::Front, Angle::ThreeQuarter, Angle::Profile];
 const BACKDROPS: [Backdrop; 4] = [Backdrop::Dark, Backdrop::Grey, Backdrop::Light, Backdrop::Scene];
@@ -110,12 +112,13 @@ pub fn window(ctx: &egui::Context, p: &Palette, settings: &mut PortraitSettings,
     actions
 }
 
-/// The preview and its notes on the left, the choices on the right. A tall
-/// frame keeps its full width; its notes continue below it in the scroll.
+/// The preview and its notes on the left, the choices on the right. The
+/// frame retains its selected ratio and fits within the window's available
+/// height; notes continue below it in the scroll.
 fn body(ui: &mut egui::Ui, p: &Palette, settings: &mut PortraitSettings, view: &View, actions: &mut Vec<Action>) {
     let room = ui.available_rect_before_wrap();
-    let width = (room.width() * 0.54).max(120.0);
-    let height = width / settings.ratio.aspect();
+    let frame_size = frame_size(room.size(), settings.ratio.aspect());
+    let (width, height) = (frame_size.x, frame_size.y);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 16.0;
         ui.vertical(|ui| {
@@ -143,7 +146,9 @@ fn body(ui: &mut egui::Ui, p: &Palette, settings: &mut PortraitSettings, view: &
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0;
                     let shot = view.shot.is_some() || view.shooting;
-                    ui.add_enabled_ui(!shot, |ui| choices_ui(ui, p, settings));
+                    if ui.add_enabled_ui(!shot, |ui| choices_ui(ui, p, settings)).inner {
+                        actions.push(Action::ResetCamera);
+                    }
                     ui.add_space(6.0);
                     // (chosen with the photo shown too: it is drawn at the
                     // largest side)
@@ -153,7 +158,13 @@ fn body(ui: &mut egui::Ui, p: &Palette, settings: &mut PortraitSettings, view: &
     });
 }
 
-pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSettings) {
+fn frame_size(available: Vec2, aspect: f32) -> Vec2 {
+    let max_width = (available.x * 0.54).max(120.0).min(available.x);
+    let height = (max_width / aspect).min(available.y.max(1.0));
+    Vec2::new(height * aspect, height)
+}
+
+pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSettings) -> bool {
     choice(
         ui,
         p,
@@ -174,20 +185,7 @@ pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSetting
         &RATIOS,
         &[
             aurora_i18n::tr!("ui-appearance-portrait-ratio-square"),
-            aurora_i18n::tr!("ui-appearance-portrait-ratio-two-three"),
-            aurora_i18n::tr!("ui-appearance-portrait-ratio-three-five"),
-        ],
-    );
-    choice(
-        ui,
-        p,
-        aurora_i18n::tr!("ui-appearance-portrait-ratio"),
-        &mut s.ratio,
-        &RATIOS,
-        &[
-            aurora_i18n::tr!("ui-appearance-portrait-ratio-square"),
-            aurora_i18n::tr!("ui-appearance-portrait-ratio-two-three"),
-            aurora_i18n::tr!("ui-appearance-portrait-ratio-three-five"),
+            aurora_i18n::tr!("ui-appearance-portrait-ratio-portrait"),
         ],
     );
     choice(
@@ -238,12 +236,14 @@ pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSetting
             aurora_i18n::tr!("ui-appearance-portrait-region"),
         ],
     );
+    let reset = widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-reset-camera")).clicked();
     ui.add_space(6.0);
     // (the backdrop alone already shows our avatar alone)
     ui.add_enabled_ui(s.backdrop == Backdrop::Scene, |ui| {
         widgets::checkbox(ui, p, &mut s.hide_others, aurora_i18n::tr!("ui-appearance-portrait-hide-others"));
     });
     widgets::checkbox(ui, p, &mut s.keep, aurora_i18n::tr!("ui-appearance-portrait-keep"));
+    reset
 }
 
 /// The optional larger picture: upload it for the shown price, save it as a
@@ -947,5 +947,18 @@ mod tests {
                 window(ctx, p, settings, &view(), &mut true);
             },
         );
+    }
+
+    #[test]
+    fn the_portrait_frame_fits_the_window_height_without_changing_its_ratio() {
+        let available = Vec2::new(640.0, 420.0);
+        let portrait = frame_size(available, Ratio::Portrait.aspect());
+        assert!(portrait.x <= available.x && portrait.y <= available.y);
+        assert!((portrait.x / portrait.y - Ratio::Portrait.aspect()).abs() < 1e-5);
+
+        let short_window = Vec2::new(640.0, 220.0);
+        let portrait = frame_size(short_window, Ratio::Portrait.aspect());
+        assert!(portrait.y <= short_window.y);
+        assert!((portrait.x / portrait.y - Ratio::Portrait.aspect()).abs() < 1e-5);
     }
 }

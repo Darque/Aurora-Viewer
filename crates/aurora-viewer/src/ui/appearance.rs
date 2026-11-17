@@ -1113,12 +1113,12 @@ fn gallery(
     }
 }
 
-/// Fit keeps the whole image; Fill crops its UVs around the centre, keeping
-/// its aspect ratio and all geometry inside the frame. This optional crop
-/// is an Aurora extension to LLOutfitGalleryItem::draw (lloutfitgallery.cpp).
+/// Fit keeps the whole image; Fill crops square and landscape images around
+/// the centre. Tall portrait images always fit the tile's height so the
+/// avatar remains visible in square outfit cards.
 fn preview_rects(frame: egui::Rect, size: Vec2, fill: bool) -> (egui::Rect, egui::Rect) {
     let scale = frame.size() / size;
-    if fill {
+    if fill && size.x >= size.y {
         let visible = if scale.x < scale.y {
             Vec2::new(scale.x / scale.y, 1.0)
         } else {
@@ -2574,7 +2574,7 @@ mod tests {
                 assert!(uv.min.x >= 0.0 && uv.min.y >= 0.0 && uv.max.x <= 1.0 && uv.max.y <= 1.0);
                 let source = size * uv.size();
                 assert!((source.x / source.y - rect.width() / rect.height()).abs() < 1e-5);
-                if fill {
+                if fill && size.x >= size.y {
                     assert_eq!(rect, frame);
                     assert!((uv.width().max(uv.height()) - 1.0).abs() < 1e-5);
                 } else {
@@ -2584,9 +2584,11 @@ mod tests {
                 }
             }
         }
-        let (_, portrait) = preview_rects(frame, egui::vec2(240.0, 400.0), true);
-        assert_eq!(portrait.min.x, 0.0);
-        assert!(portrait.min.y > 0.0);
+        let (portrait_rect, portrait) = preview_rects(frame, egui::vec2(240.0, 400.0), true);
+        assert_eq!(portrait.min, egui::Pos2::ZERO);
+        assert_eq!(portrait.max, egui::pos2(1.0, 1.0));
+        assert!((portrait_rect.height() - frame.height()).abs() < 1e-4);
+        assert!(portrait_rect.width() < frame.width());
         let (_, landscape) = preview_rects(frame, egui::vec2(400.0, 180.0), true);
         assert!(landscape.min.x > 0.0);
         assert_eq!(landscape.min.y, 0.0);

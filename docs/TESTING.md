@@ -10376,21 +10376,23 @@ gallery's double-click continues to open the outfit's contents.
   820 points the rail becomes a menu over the grid, under 600 the preview
   gives way to the selection card under the grid. Base outfits and Outfits
   keep the accordion list and show this same preview beside it in a wide
-  window. The Folders heading has a folder-plus icon at its right edge; it
+  window. The Folders heading has a plus icon at its right edge; it
   opens New folder without taking a row from the folder list.
 - `portrait`, `portrait-base`, `portrait-not-worn`, `portrait-shot`, `portrait-bust`,
-  `portrait-face`, `portrait-profile`, `portrait-ratio-2-3`,
-  `portrait-ratio-3-5`, `photo-mode`: the showcase, then at
+  `portrait-face`, `portrait-profile`, `portrait-ratio-portrait`,
+  `photo-mode`: the showcase, then at
   frame 600 the outfit's auto portrait (Fider #447) of the outfit worn (in
   that framing or angle), of one not worn, or the square photo mode;
   `portrait-shot` also takes the photo at frame 900. The window: the live preview framed on
   the avatar (thirds, corners, "Framed automatically"), Framing and Image
-  ratio, Pose / Angle / Backdrop / Light, Hide the other avatars, Keep these settings,
+  ratio (Square or Portrait), Pose / Angle / Backdrop / Light, Hide the other avatars, Keep these settings,
   Cancel / Take the photo, then Retake / Use this photo, and the link to the
   photo mode. Check that the whole body, the bust or the face fills the
-  selected square, 2:3 or 3:5 frame with a small margin, from the front,
-  three-quarter or profile. The portrait uses its available width and lets
-  the notes continue below; the free inventory thumbnail stays square. The
+  selected Square or Portrait frame with a small margin, from the front,
+  three-quarter or profile. The frame retains its ratio while fitting the
+  window height; Reset camera clears adjustments for the current combination
+  of framing, ratio, pose and angle. Portraits fit the height of square
+  outfit tiles; the free inventory thumbnail stays square. The
   A pose lowers the arms to about 45°, Arms by the sides to the body; the
   backdrops flatten the cut-out avatar over dark, grey or light, The scene
   keeps the region; Studio lights the avatar from behind the camera. Cancel
@@ -10419,8 +10421,8 @@ gallery's double-click continues to open the outfit's contents.
   `outfit-portraits` data directory without a file picker. Confirm the free
   outfit thumbnail is set with no paid HD upload or balance change. The
   showcase preview's Image button opens the detailed local image; close and
-  reopen Appearance to confirm it loads from disk. The 2:3 and 3:5 demo
-  variants show each crop before capture.
+  reopen Appearance to confirm it loads from disk. The portrait demo variant
+  shows the tall crop before capture.
 - `batch`, `batch-run`: the showcase, then at frame 600 the batch
   portraits' window (Fider #447, the banner's Take the portraits) over the
   demo's outfits: those without a picture ticked, those with one to tick to

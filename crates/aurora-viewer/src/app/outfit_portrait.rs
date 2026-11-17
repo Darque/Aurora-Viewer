@@ -120,6 +120,10 @@ pub(super) struct Session {
     /// The settings the camera was last framed for; frames left to follow.
     framed: Option<PortraitSettings>,
     reframe: Option<Instant>,
+    /// Camera input replaced the automatic framing and should be saved
+    /// against the current choice on the next rendered frame.
+    manual_camera_pending: Option<u64>,
+    manual_camera_previous: Option<(Vec3, Vec3)>,
     /// The studio light's sun is chosen at the next framing.
     sun_due: bool,
     /// The studio light's sun, chosen when framing.
@@ -197,6 +201,8 @@ impl App {
             was_open: was_open && kind == Kind::Viewfinder,
             framed: None,
             reframe: (kind == Kind::Viewfinder).then(|| Instant::now() + REFRAME),
+            manual_camera_pending: None,
+            manual_camera_previous: None,
             sun_due: true,
             sun: None,
             pose: None,
@@ -265,6 +271,20 @@ impl App {
         self.end_outfit_portrait_photo();
         if self.outfit_portrait.take().is_some() {
             log::info!("outfit portrait: closed");
+        }
+    }
+
+    /// Camera drags and wheel changes become a preset for the current
+    /// framing after the camera has applied the input for this frame.
+    pub(super) fn note_outfit_portrait_camera_adjusted(&mut self) {
+        if let Some(s) = &mut self.outfit_portrait
+            && !s.over
+            && !s.batch
+        {
+            s.reframe = None;
+            s.manual_camera_pending = Some(self.frame_count);
+            s.manual_camera_previous = Some((self.camera.position, self.camera.target));
+            s.preview_at = None;
         }
     }
 
@@ -363,6 +383,29 @@ impl App {
             s.reframe = Some(Instant::now() + REFRAME);
             s.sun_due = true;
         }
+        if s.manual_camera_pending.is_some_and(|frame| self.frame_count > frame)
+            && let Some(j) = &joints
+        {
+            let current_view = (self.camera.position, self.camera.target);
+            let (base_eye, base_target) =
+                portrait::frame_for_aspect(j, s.settings.framing, s.settings.angle, fov, s.settings.ratio.aspect());
+            s.settings.save_camera_adjustment(portrait::CameraAdjustment::from_views(
+                base_eye,
+                base_target,
+                self.camera.position,
+                self.camera.target,
+            ));
+            let still_moving = s
+                .manual_camera_previous
+                .is_some_and(|(eye, target)| eye.distance(current_view.0) > 1e-4 || target.distance(current_view.1) > 1e-4);
+            if still_moving {
+                s.manual_camera_previous = Some(current_view);
+            } else {
+                s.manual_camera_pending = None;
+                s.manual_camera_previous = None;
+            }
+            s.reframe = None;
+        }
         if s.framed.as_ref() != Some(&s.settings) {
             s.framed = Some(s.settings);
             s.preview_at = None;
@@ -372,7 +415,7 @@ impl App {
             && !s.shooting
             && let Some(j) = &joints
         {
-            let (eye, target) = portrait::frame_for_aspect(j, s.settings.framing, s.settings.angle, fov, s.settings.ratio.aspect());
+            let (eye, target) = portrait::frame_for_settings(j, &s.settings, fov);
             if std::mem::take(&mut s.sun_due) {
                 // the key light behind the camera, to its side and high
                 let toward = (eye - target).truncate();
@@ -700,6 +743,14 @@ impl App {
                 s.settings.framing = portrait::Framing::Body;
                 s.settings.angle = portrait::Angle::Front;
             }
+            window::Action::ResetCamera => {
+                s.settings.reset_camera_adjustment();
+                s.manual_camera_pending = None;
+                s.manual_camera_previous = None;
+                s.reframe = Some(Instant::now() + REFRAME);
+                s.sun_due = true;
+                s.preview_at = None;
+            }
             window::Action::Pose => s.vf_pose = !s.vf_pose,
             window::Action::Studio => {
                 s.vf_studio = !s.vf_studio;
@@ -772,7 +823,7 @@ impl App {
     }
 }
 
-/// `AURORA_DEMO_APPEARANCE=portrait|portrait-base|portrait-not-worn|portrait-shot|portrait-ratio-2-3|portrait-ratio-3-5|photo-mode`,
+/// `AURORA_DEMO_APPEARANCE=portrait|portrait-base|portrait-not-worn|portrait-shot|portrait-ratio-portrait|photo-mode`,
 /// and the HD picture's `portrait-hd|portrait-hd-local|portrait-hd-poor|photo-mode-hd`.
 fn demo_mode() -> Option<&'static str> {
     static MODE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
@@ -827,8 +878,9 @@ impl App {
                         "portrait-bust" => s.settings.framing = portrait::Framing::Bust,
                         "portrait-face" => s.settings.framing = portrait::Framing::Face,
                         "portrait-profile" => s.settings.angle = portrait::Angle::Profile,
-                        "portrait-ratio-2-3" => s.settings.ratio = portrait::Ratio::TwoThree,
-                        "portrait-ratio-3-5" | "portrait-hd-local" => s.settings.ratio = portrait::Ratio::ThreeFive,
+                        "portrait-ratio-portrait" | "portrait-ratio-2-3" | "portrait-ratio-3-5" | "portrait-hd-local" => {
+                            s.settings.ratio = portrait::Ratio::Portrait;
+                        }
                         _ => {}
                     }
                     if mode.ends_with("-hd") || mode == "portrait-hd-poor" {
