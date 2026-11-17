@@ -87,6 +87,10 @@ impl CameraAdjustment {
         let world = |v: [f32; 3]| right * v[0] + up * v[1] + back * v[2];
         (base_eye + world(self.eye), base_target + world(self.target))
     }
+
+    pub fn is_saved(self) -> bool {
+        self.saved
+    }
 }
 
 /// The pose shown while the portrait is set up, on our screen only.
@@ -264,6 +268,8 @@ impl Default for PortraitSettings {
 }
 
 impl PortraitSettings {
+    pub const CAMERA_ARRANGEMENTS: usize = 54;
+
     /// What the next portrait starts from: the kept choices, else the
     /// defaults (with "keep" left as the user set it).
     pub fn opening(saved: &Self) -> Self {
@@ -302,6 +308,46 @@ impl PortraitSettings {
             Angle::Profile => 2,
         };
         (ratio, framing * 9 + pose * 3 + angle)
+    }
+
+    pub fn camera_arrangement_index(&self) -> usize {
+        let (ratio, index) = self.camera_preset_index();
+        ratio * 27 + index
+    }
+
+    pub fn camera_arrangement_is_saved(&self, arrangement: usize) -> bool {
+        if arrangement >= Self::CAMERA_ARRANGEMENTS {
+            return false;
+        }
+        let ratio = arrangement / 27;
+        let index = arrangement % 27;
+        self.camera_presets[ratio][index].is_saved()
+    }
+
+    /// Select one of the saved Framing × Ratio × Pose × Angle camera views.
+    pub fn select_camera_arrangement(&mut self, arrangement: usize) -> bool {
+        if arrangement >= Self::CAMERA_ARRANGEMENTS {
+            return false;
+        }
+        let ratio = arrangement / 27;
+        let choice = arrangement % 27;
+        self.ratio = if ratio == 0 { Ratio::Square } else { Ratio::Portrait };
+        self.framing = match choice / 9 {
+            0 => Framing::Body,
+            1 => Framing::Bust,
+            _ => Framing::Face,
+        };
+        self.pose = match (choice / 3) % 3 {
+            0 => Pose::A,
+            1 => Pose::ArmsDown,
+            _ => Pose::Current,
+        };
+        self.angle = match choice % 3 {
+            0 => Angle::Front,
+            1 => Angle::ThreeQuarter,
+            _ => Angle::Profile,
+        };
+        true
     }
 
     pub fn camera_adjustment(&self) -> CameraAdjustment {
@@ -611,11 +657,46 @@ mod tests {
         let target = base_target + Vec3::new(-0.1, 0.0, 0.15);
         settings.capture_camera_view(&joints, 1.0, eye, target);
 
-        let restored: PortraitSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
-        let reopened = PortraitSettings::opening(&restored);
+        let mut app_settings = crate::settings::Settings::default();
+        app_settings.outfit_portrait = settings;
+        let saved_file = serde_json::to_string(&app_settings).unwrap();
+        let restored: crate::settings::Settings = serde_json::from_str(&saved_file).unwrap();
+        let reopened = PortraitSettings::opening(&restored.outfit_portrait);
+        let arrangement = reopened.camera_arrangement_index();
+        assert!(reopened.camera_arrangement_is_saved(arrangement));
         let (eye_after_reload, target_after_reload) = frame_for_settings(&joints, &reopened, 1.0);
         assert!(eye_after_reload.distance(eye) < 1e-5);
         assert!(target_after_reload.distance(target) < 1e-5);
+    }
+
+    #[test]
+    fn saved_arrangement_selection_restores_its_choices_and_camera() {
+        let mut settings = PortraitSettings {
+            framing: Framing::Bust,
+            ratio: Ratio::Portrait,
+            pose: Pose::ArmsDown,
+            angle: Angle::Profile,
+            ..Default::default()
+        };
+        let joints = standing();
+        let (eye, target) = frame_for_settings(&joints, &settings, 1.0);
+        let view = (eye + Vec3::new(0.2, 0.1, 0.0), target + Vec3::new(-0.1, 0.0, 0.15));
+        settings.save_camera_adjustment(CameraAdjustment::from_views(eye, target, view.0, view.1));
+        let saved_index = settings.camera_arrangement_index();
+
+        settings.framing = Framing::Body;
+        settings.ratio = Ratio::Square;
+        settings.pose = Pose::A;
+        settings.angle = Angle::Front;
+        assert!(settings.select_camera_arrangement(saved_index));
+        assert_eq!(settings.framing, Framing::Bust);
+        assert_eq!(settings.ratio, Ratio::Portrait);
+        assert_eq!(settings.pose, Pose::ArmsDown);
+        assert_eq!(settings.angle, Angle::Profile);
+        assert!(settings.camera_arrangement_is_saved(saved_index));
+        let (restored_eye, restored_target) = frame_for_settings(&joints, &settings, 1.0);
+        assert!(restored_eye.distance(view.0) < 1e-5);
+        assert!(restored_target.distance(view.1) < 1e-5);
     }
 
     #[test]

@@ -120,13 +120,8 @@ pub(super) struct Session {
     /// The settings the camera was last framed for; frames left to follow.
     framed: Option<PortraitSettings>,
     reframe: Option<Instant>,
-    /// Camera input replaced the automatic framing and should be saved
-    /// against the current choice on the next rendered frame.
-    manual_camera_pending: Option<u64>,
-    manual_camera_previous: Option<(Vec3, Vec3)>,
-    /// A drag or wheel input happened during this session. Capturing once
-    /// more on close preserves the final displayed view if the last camera
-    /// update had not yet reached the regular preset recorder.
+    /// A drag or wheel input changed the view; closing captures its final
+    /// position once more in case the camera settled after the last event.
     camera_touched: bool,
     /// The studio light's sun is chosen at the next framing.
     sun_due: bool,
@@ -205,8 +200,6 @@ impl App {
             was_open: was_open && kind == Kind::Viewfinder,
             framed: None,
             reframe: (kind == Kind::Viewfinder).then(|| Instant::now() + REFRAME),
-            manual_camera_pending: None,
-            manual_camera_previous: None,
             camera_touched: false,
             sun_due: true,
             sun: None,
@@ -238,20 +231,15 @@ impl App {
     /// the window stays for the previous outfit's question when the outfit
     /// was worn from it.
     fn end_outfit_portrait_photo(&mut self) {
-        let camera_adjustment = self.outfit_portrait.as_ref().filter(|s| s.camera_touched && !s.over).and_then(|s| {
-            let joints = self.portrait_joints()?;
-            let mut settings = s.settings;
-            settings.capture_camera_view(&joints, self.camera.fov_y, self.camera.position, self.camera.target);
-            Some(settings.camera_adjustment())
-        });
+        let capture_camera = self.outfit_portrait.as_ref().is_some_and(|s| s.camera_touched && !s.over);
+        if capture_camera {
+            self.capture_outfit_portrait_camera();
+        }
         let Some(s) = &mut self.outfit_portrait else {
             return;
         };
         if s.over {
             return;
-        }
-        if let Some(adjustment) = camera_adjustment {
-            s.settings.save_camera_adjustment(adjustment);
         }
         s.over = true;
         s.pose = None;
@@ -289,17 +277,35 @@ impl App {
     }
 
     /// Camera drags and wheel changes become a preset for the current
-    /// framing after the camera has applied the input for this frame.
+    /// framing, saved immediately alongside the other kept portrait choices.
     pub(super) fn note_outfit_portrait_camera_adjusted(&mut self) {
-        if let Some(s) = &mut self.outfit_portrait
-            && !s.over
-            && !s.batch
-        {
+        let active = self.outfit_portrait.as_ref().is_some_and(|s| !s.over && !s.batch);
+        if !active {
+            return;
+        }
+        if let Some(s) = &mut self.outfit_portrait {
             s.camera_touched = true;
             s.reframe = None;
-            s.manual_camera_pending = Some(self.frame_count);
-            s.manual_camera_previous = Some((self.camera.position, self.camera.target));
             s.preview_at = None;
+        }
+        self.capture_outfit_portrait_camera();
+    }
+
+    fn capture_outfit_portrait_camera(&mut self) {
+        let Some(joints) = self.portrait_joints() else {
+            return;
+        };
+        let (fov, eye, target) = (self.camera.fov_y, self.camera.position, self.camera.target);
+        let settings = self.outfit_portrait.as_mut().and_then(|s| {
+            if s.over || s.batch {
+                return None;
+            }
+            s.settings.capture_camera_view(&joints, fov, eye, target);
+            Some(s.settings)
+        });
+        if let Some(settings) = settings {
+            self.settings.outfit_portrait = settings;
+            self.settings.save();
         }
     }
 
@@ -397,28 +403,6 @@ impl App {
         if s.kind == Kind::Studio && s.framed.as_ref().map(|f| (f.framing, f.ratio, f.angle, f.pose)) != Some(framing) {
             s.reframe = Some(Instant::now() + REFRAME);
             s.sun_due = true;
-        }
-        // Camera input is accumulated before Camera::update later in the
-        // frame. Leave one full update between detecting the drag and
-        // measuring it, or the saved preset is the untouched default view.
-        if s.manual_camera_pending
-            .is_some_and(|frame| self.frame_count > frame.saturating_add(1))
-            && let Some(j) = &joints
-        {
-            let current_view = (self.camera.position, self.camera.target);
-            s.settings.capture_camera_view(j, fov, self.camera.position, self.camera.target);
-            let still_moving = s
-                .manual_camera_previous
-                .is_some_and(|(eye, target)| eye.distance(current_view.0) > 1e-4 || target.distance(current_view.1) > 1e-4);
-            if still_moving {
-                s.manual_camera_previous = Some(current_view);
-            } else {
-                s.manual_camera_pending = None;
-                s.manual_camera_previous = None;
-                self.settings.outfit_portrait = s.settings;
-                self.settings.save();
-            }
-            s.reframe = None;
         }
         if s.framed.as_ref() != Some(&s.settings) {
             s.framed = Some(s.settings);
@@ -759,8 +743,6 @@ impl App {
             }
             window::Action::ResetCamera => {
                 s.settings.reset_camera_adjustment();
-                s.manual_camera_pending = None;
-                s.manual_camera_previous = None;
                 s.camera_touched = false;
                 s.reframe = Some(Instant::now() + REFRAME);
                 s.sun_due = true;

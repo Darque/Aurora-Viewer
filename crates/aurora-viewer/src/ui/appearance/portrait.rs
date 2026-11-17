@@ -90,6 +90,7 @@ const ANGLES: [Angle; 3] = [Angle::Front, Angle::ThreeQuarter, Angle::Profile];
 const BACKDROPS: [Backdrop; 4] = [Backdrop::Dark, Backdrop::Grey, Backdrop::Light, Backdrop::Scene];
 const LIGHTINGS: [Lighting; 2] = [Lighting::Studio, Lighting::Region];
 const HD_SIDES: [HdSide; 2] = [HdSide::Side512, HdSide::Side1024];
+const LAST_USED_ARRANGEMENT: usize = PortraitSettings::CAMERA_ARRANGEMENTS;
 
 /// The auto portrait's window, or once its photo is over, the previous
 /// outfit's question; `open` is cleared by its X.
@@ -212,6 +213,7 @@ pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSetting
             aurora_i18n::tr!("ui-appearance-portrait-profile"),
         ],
     );
+    saved_arrangements(ui, s);
     choice(
         ui,
         p,
@@ -244,6 +246,61 @@ pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSetting
     });
     widgets::checkbox(ui, p, &mut s.keep, aurora_i18n::tr!("ui-appearance-portrait-keep"));
     reset
+}
+
+/// Camera views saved for each Framing, Image ratio, Pose and Angle set.
+/// The current portrait settings are the default "Last used" arrangement.
+fn saved_arrangements(ui: &mut egui::Ui, s: &mut PortraitSettings) {
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(aurora_i18n::tr!("ui-appearance-portrait-arrangements"))
+            .size(12.0)
+            .family(fonts::semibold(ui.ctx()))
+            .color(ui.visuals().weak_text_color()),
+    );
+    let last_used = s.camera_arrangement_index();
+    let last_used_label = format!("{} · {}", aurora_i18n::tr!("ui-appearance-portrait-last-used"), arrangement_name(s));
+    let mut selected = LAST_USED_ARRANGEMENT;
+    egui::ComboBox::from_id_salt("outfit_portrait_saved_arrangements")
+        .selected_text(&last_used_label)
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut selected, LAST_USED_ARRANGEMENT, &last_used_label);
+            for arrangement in 0..PortraitSettings::CAMERA_ARRANGEMENTS {
+                if arrangement == last_used || !s.camera_arrangement_is_saved(arrangement) {
+                    continue;
+                }
+                let mut candidate = *s;
+                candidate.select_camera_arrangement(arrangement);
+                ui.selectable_value(&mut selected, arrangement, arrangement_name(&candidate));
+            }
+        });
+    if selected != LAST_USED_ARRANGEMENT {
+        s.select_camera_arrangement(selected);
+    }
+}
+
+fn arrangement_name(s: &PortraitSettings) -> String {
+    let framing = match s.framing {
+        Framing::Body => aurora_i18n::tr!("ui-appearance-portrait-body"),
+        Framing::Bust => aurora_i18n::tr!("ui-appearance-portrait-bust"),
+        Framing::Face => aurora_i18n::tr!("ui-appearance-portrait-face"),
+    };
+    let ratio = match s.ratio {
+        Ratio::Square => aurora_i18n::tr!("ui-appearance-portrait-ratio-square"),
+        Ratio::Portrait => aurora_i18n::tr!("ui-appearance-portrait-ratio-portrait"),
+    };
+    let pose = match s.pose {
+        Pose::A => aurora_i18n::tr!("ui-appearance-portrait-pose-a"),
+        Pose::ArmsDown => aurora_i18n::tr!("ui-appearance-portrait-arms-down"),
+        Pose::Current => aurora_i18n::tr!("ui-appearance-portrait-pose-current"),
+    };
+    let angle = match s.angle {
+        Angle::Front => aurora_i18n::tr!("ui-appearance-portrait-front"),
+        Angle::ThreeQuarter => aurora_i18n::tr!("ui-appearance-portrait-three-quarter"),
+        Angle::Profile => aurora_i18n::tr!("ui-appearance-portrait-profile"),
+    };
+    format!("{framing} · {ratio} · {pose} · {angle}")
 }
 
 /// The optional larger picture: upload it for the shown price, save it as a
