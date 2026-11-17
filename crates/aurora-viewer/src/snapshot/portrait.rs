@@ -314,6 +314,13 @@ impl PortraitSettings {
         self.camera_presets[ratio][index] = adjustment;
     }
 
+    /// Remember the displayed view relative to this framing's automatic
+    /// camera, keyed by the current framing, ratio, pose and angle.
+    pub fn capture_camera_view(&mut self, joints: &Joints, fov: f32, eye: Vec3, target: Vec3) {
+        let (base_eye, base_target) = frame_for_aspect(joints, self.framing, self.angle, fov, self.ratio.aspect());
+        self.save_camera_adjustment(CameraAdjustment::from_views(base_eye, base_target, eye, target));
+    }
+
     pub fn reset_camera_adjustment(&mut self) {
         self.save_camera_adjustment(CameraAdjustment::default());
     }
@@ -586,6 +593,29 @@ mod tests {
         assert_eq!(same_key.camera_adjustment(), CameraAdjustment::default());
         assert_eq!(same_key.camera_adjustment().apply(base_eye, base_target), (base_eye, base_target));
         assert_ne!(settings.camera_adjustment(), CameraAdjustment::default());
+    }
+
+    #[test]
+    fn captured_view_survives_settings_reload_for_its_framing_key() {
+        let mut settings = PortraitSettings {
+            framing: Framing::Bust,
+            ratio: Ratio::Portrait,
+            pose: Pose::ArmsDown,
+            angle: Angle::Profile,
+            keep: true,
+            ..Default::default()
+        };
+        let joints = standing();
+        let (base_eye, base_target) = frame_for_aspect(&joints, settings.framing, settings.angle, 1.0, settings.ratio.aspect());
+        let eye = base_eye + Vec3::new(0.2, 0.1, 0.0);
+        let target = base_target + Vec3::new(-0.1, 0.0, 0.15);
+        settings.capture_camera_view(&joints, 1.0, eye, target);
+
+        let restored: PortraitSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        let reopened = PortraitSettings::opening(&restored);
+        let (eye_after_reload, target_after_reload) = frame_for_settings(&joints, &reopened, 1.0);
+        assert!(eye_after_reload.distance(eye) < 1e-5);
+        assert!(target_after_reload.distance(target) < 1e-5);
     }
 
     #[test]

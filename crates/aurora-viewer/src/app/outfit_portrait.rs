@@ -124,6 +124,10 @@ pub(super) struct Session {
     /// against the current choice on the next rendered frame.
     manual_camera_pending: Option<u64>,
     manual_camera_previous: Option<(Vec3, Vec3)>,
+    /// A drag or wheel input happened during this session. Capturing once
+    /// more on close preserves the final displayed view if the last camera
+    /// update had not yet reached the regular preset recorder.
+    camera_touched: bool,
     /// The studio light's sun is chosen at the next framing.
     sun_due: bool,
     /// The studio light's sun, chosen when framing.
@@ -203,6 +207,7 @@ impl App {
             reframe: (kind == Kind::Viewfinder).then(|| Instant::now() + REFRAME),
             manual_camera_pending: None,
             manual_camera_previous: None,
+            camera_touched: false,
             sun_due: true,
             sun: None,
             pose: None,
@@ -233,11 +238,20 @@ impl App {
     /// the window stays for the previous outfit's question when the outfit
     /// was worn from it.
     fn end_outfit_portrait_photo(&mut self) {
+        let camera_adjustment = self.outfit_portrait.as_ref().filter(|s| s.camera_touched && !s.over).and_then(|s| {
+            let joints = self.portrait_joints()?;
+            let mut settings = s.settings;
+            settings.capture_camera_view(&joints, self.camera.fov_y, self.camera.position, self.camera.target);
+            Some(settings.camera_adjustment())
+        });
         let Some(s) = &mut self.outfit_portrait else {
             return;
         };
         if s.over {
             return;
+        }
+        if let Some(adjustment) = camera_adjustment {
+            s.settings.save_camera_adjustment(adjustment);
         }
         s.over = true;
         s.pose = None;
@@ -281,6 +295,7 @@ impl App {
             && !s.over
             && !s.batch
         {
+            s.camera_touched = true;
             s.reframe = None;
             s.manual_camera_pending = Some(self.frame_count);
             s.manual_camera_previous = Some((self.camera.position, self.camera.target));
@@ -391,14 +406,7 @@ impl App {
             && let Some(j) = &joints
         {
             let current_view = (self.camera.position, self.camera.target);
-            let (base_eye, base_target) =
-                portrait::frame_for_aspect(j, s.settings.framing, s.settings.angle, fov, s.settings.ratio.aspect());
-            s.settings.save_camera_adjustment(portrait::CameraAdjustment::from_views(
-                base_eye,
-                base_target,
-                self.camera.position,
-                self.camera.target,
-            ));
+            s.settings.capture_camera_view(j, fov, self.camera.position, self.camera.target);
             let still_moving = s
                 .manual_camera_previous
                 .is_some_and(|(eye, target)| eye.distance(current_view.0) > 1e-4 || target.distance(current_view.1) > 1e-4);
@@ -407,6 +415,8 @@ impl App {
             } else {
                 s.manual_camera_pending = None;
                 s.manual_camera_previous = None;
+                self.settings.outfit_portrait = s.settings;
+                self.settings.save();
             }
             s.reframe = None;
         }
@@ -751,6 +761,7 @@ impl App {
                 s.settings.reset_camera_adjustment();
                 s.manual_camera_pending = None;
                 s.manual_camera_previous = None;
+                s.camera_touched = false;
                 s.reframe = Some(Instant::now() + REFRAME);
                 s.sun_due = true;
                 s.preview_at = None;
