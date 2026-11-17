@@ -902,6 +902,12 @@ pub fn check(ui: &mut Ui, p: &Palette, icon: &str, label: &str, checked: bool, e
     clicked && enabled
 }
 
+/// Check entry for a menu that offers several selections. It leaves the
+/// menu open so the user can keep selecting until focus moves elsewhere.
+pub fn check_keep_open(ui: &mut Ui, p: &Palette, icon: &str, label: &str, checked: bool, enabled: bool) -> bool {
+    row(ui, p, icon, label, enabled, End::Check(checked), false).clicked() && enabled
+}
+
 /// Check entry with the keys of its shortcut (an empty `keys` shows none);
 /// true when clicked (the menu closes).
 pub fn check_keys(ui: &mut Ui, p: &Palette, icon: &str, label: &str, checked: bool, enabled: bool, keys: &str) -> bool {

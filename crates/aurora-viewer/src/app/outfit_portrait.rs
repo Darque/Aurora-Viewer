@@ -28,6 +28,7 @@ use crate::snapshot::portrait::{self, Backdrop, Lighting, PortraitSettings};
 use crate::ui::appearance::portrait as window;
 use aurora_render::Renderer;
 use glam::{Quat, Vec3};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -54,6 +55,48 @@ const REFRAME: Duration = Duration::from_millis(1200);
 /// this high, over the midday sky (`portrait::STUDIO_TIME`).
 const KEY_SIDE: f32 = 30.0;
 const KEY_HEIGHT: f32 = 40.0;
+
+/// A portrait is ready when every resolved item in its outfit is in Current
+/// Outfit. Other worn outfits can coexist with a base outfit being pictured.
+fn outfit_is_worn(inv: &crate::world::inventory::Inventory, outfit: Uuid, bases: &HashSet<Uuid>) -> bool {
+    use crate::world::{appearance, base_outfits};
+
+    if !appearance::complete(inv, outfit) {
+        return false;
+    }
+    let mut expected = if bases.contains(&outfit) {
+        let Ok(report) = base_outfits::resolve_for_wear(inv, outfit) else {
+            return false;
+        };
+        report.links
+    } else {
+        let mut links: Vec<_> = appearance::usable_links(inv, outfit)
+            .into_iter()
+            .filter(|link| !link.folder)
+            .collect();
+        for base in base_outfits::linked_bases(inv, outfit, bases) {
+            let Ok(report) = base_outfits::resolve_for_wear(inv, base) else {
+                return false;
+            };
+            links.extend(report.links);
+        }
+        links
+    };
+    expected.retain(|link| !link.folder);
+    let required: HashSet<_> = expected.into_iter().map(|link| link.target).collect();
+    if required.is_empty() {
+        return false;
+    }
+    let Some(cof) = appearance::cof(inv).filter(|cof| appearance::complete(inv, *cof)) else {
+        return false;
+    };
+    let worn: HashSet<_> = appearance::folder_links(inv, cof)
+        .into_iter()
+        .filter(|link| !link.folder)
+        .map(|link| link.target)
+        .collect();
+    portrait::items_worn(&required, &worn)
+}
 
 /// The photo awaiting "Use".
 pub(super) struct Shot {
@@ -453,19 +496,57 @@ impl App {
             portrait::HdOffer::Ready(cost) if s.settings.hd && !self.outfit_hd_busy() => Some(cost),
             _ => None,
         };
+        // a price not yet agreed to (or changed since): asked first
+        if let Some(cost) = hd.filter(|cost| *cost > 0 && confirmed != Some(*cost)) {
+            if let Some(s) = &mut self.outfit_portrait {
+                s.hd_confirm = Some(cost);
+            }
+            return;
+        }
+        let (outfit, save_local, size, pixels) = {
+            let s = self.outfit_portrait.as_ref().expect("portrait checked above");
+            let shot = s.shot.as_ref().expect("shot checked above");
+            (s.outfit, s.settings.hd_local, shot.size, shot.pixels.clone())
+        };
+        if save_local {
+            let name = self
+                .world
+                .inventory
+                .folders
+                .get(&outfit)
+                .map_or("outfit", |folder| folder.info.name.as_str());
+            let safe_name: String = name.chars().map(|c| if matches!(c, '/' | '\\' | ':') { '_' } else { c }).collect();
+            let file_name = format!("{safe_name} HD picture.png");
+            let Some(path) = rfd::FileDialog::new()
+                .set_title(aurora_i18n::tr!("ui-appearance-portrait-hd-local-save-title"))
+                .add_filter("PNG image", &["png"])
+                .set_file_name(&file_name)
+                .save_file()
+            else {
+                return;
+            };
+            let Some(image) = image::RgbaImage::from_raw(size.0, size.1, pixels) else {
+                self.appearance_ui.message = aurora_i18n::tr!("ui-appearance-portrait-hd-local-error", reason = "photo pixels").to_owned();
+                return;
+            };
+            let image = if image.dimensions() == (side, side) {
+                image
+            } else {
+                image::imageops::resize(&image, side, side, image::imageops::FilterType::Lanczos3)
+            };
+            if let Err(error) = image::save_buffer(&path, &image, side, side, image::ColorType::Rgba8) {
+                self.appearance_ui.message =
+                    aurora_i18n::tr!("ui-appearance-portrait-hd-local-error", reason = error.to_string()).to_owned();
+                return;
+            }
+        }
         let Some(s) = &mut self.outfit_portrait else {
             return;
         };
-        // a price not yet agreed to (or changed since): asked first
-        if let Some(cost) = hd.filter(|cost| *cost > 0 && confirmed != Some(*cost)) {
-            s.hd_confirm = Some(cost);
-            return;
-        }
         s.hd_confirm = None;
         let Some(shot) = s.shot.take() else {
             return;
         };
-        let outfit = s.outfit;
         let hd_pixels = hd.map(|_| shot.pixels.clone());
         if !self.outfit_photo_pixels(outfit, shot.size, shot.pixels) {
             return;
@@ -484,7 +565,7 @@ impl App {
         let s = self.outfit_portrait.as_ref()?;
         let inv = &self.world.inventory;
         let name = inv.folders.get(&s.outfit).map_or("", |f| f.info.name.as_str());
-        let base = crate::world::appearance::base(inv);
+        let bases = &self.appearance_ui.base_sets.data.folders;
         let image = crate::world::appearance::outfit_image(inv, s.outfit);
         let hd = window::HdView {
             offer: self.outfit_hd_offer(s.settings.hd_side.side()),
@@ -497,7 +578,7 @@ impl App {
             preview: s.preview.as_ref(),
             shot: s.shot.as_ref().map(|shot| &shot.texture),
             current: self.ui_images.get(&image).filter(|_| !image.is_nil()),
-            worn: base == Some(s.outfit),
+            worn: outfit_is_worn(inv, s.outfit, bases),
             previous: s
                 .previous
                 .map(|p| p.and_then(|id| inv.folders.get(&id)).map(|f| f.info.name.as_str())),
@@ -698,8 +779,8 @@ impl App {
     }
 }
 
-/// `AURORA_DEMO_APPEARANCE=portrait|portrait-not-worn|portrait-shot|photo-mode`,
-/// and the HD picture's `portrait-hd|portrait-hd-poor|photo-mode-hd`.
+/// `AURORA_DEMO_APPEARANCE=portrait|portrait-base|portrait-not-worn|portrait-shot|photo-mode`,
+/// and the HD picture's `portrait-hd|portrait-hd-local|portrait-hd-poor|photo-mode-hd`.
 fn demo_mode() -> Option<&'static str> {
     static MODE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     MODE.get_or_init(|| {
@@ -713,10 +794,12 @@ fn demo_mode() -> Option<&'static str> {
 impl App {
     /// The demo's steps (`AURORA_DEMO_APPEARANCE`): over the showcase, at
     /// frame 600 the auto portrait of the outfit worn (`portrait`), of one
-    /// not worn (`portrait-not-worn`), the square photo mode
+    /// not worn (`portrait-not-worn`), a base pictured alongside clothes
+    /// (`portrait-base`), or the square photo mode
     /// (`photo-mode`); `portrait-shot` takes the photo at frame 900. The HD
     /// picture's: chosen at 1024 with a fictional L$ 500 balance
-    /// (`portrait-hd`, `photo-mode-hd`), or a L$ 5 one that cannot pay the
+    /// (`portrait-hd`, `photo-mode-hd`), a locally saved PNG
+    /// (`portrait-hd-local`), or a L$ 5 one that cannot pay the
     /// demo's L$ 10 (`portrait-hd-poor`); the demo's upload takes the price
     /// off the balance.
     pub(super) fn outfit_portrait_demo(&mut self) {
@@ -738,6 +821,7 @@ impl App {
                             .unwrap_or(worn),
                         Kind::Studio,
                     ),
+                    "portrait-base" => (Uuid::from_u128(702), Kind::Studio),
                     "photo-mode" | "photo-mode-hd" => (worn, Kind::Viewfinder),
                     _ => (worn, Kind::Studio),
                 };
@@ -754,6 +838,10 @@ impl App {
                     }
                     if mode.ends_with("-hd") || mode == "portrait-hd-poor" {
                         s.settings.hd = true;
+                        s.settings.hd_side = portrait::HdSide::Side1024;
+                    }
+                    if mode == "portrait-hd-local" {
+                        s.settings.hd_local = true;
                         s.settings.hd_side = portrait::HdSide::Side1024;
                     }
                 }

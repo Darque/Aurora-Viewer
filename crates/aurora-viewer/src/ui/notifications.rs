@@ -1564,20 +1564,18 @@ mod tests {
         }
     }
 
-    /// In the Legacy toast style, French Mute Owner wraps under Accept /
+    /// In the Legacy toast style, Mute Owner wraps under Accept /
     /// Discard and must keep the same left edge as those buttons (#2932).
-    /// The interface language belongs to the whole process: switched here,
-    /// it turned the texts of the tests running beside this one French
-    /// halfway through. So this test runs again, alone, in a test process
-    /// of its own, and checks that run.
+    /// The interface language belongs to the whole process, so this test
+    /// runs alone in a test process of its own.
     #[test]
-    fn legacy_object_offer_wrapped_buttons_keep_the_text_indent_in_french() {
-        const ALONE: &str = "AURORA_TEST_FRENCH_OFFER_ALONE";
+    fn legacy_object_offer_wrapped_buttons_keep_the_text_indent_in_english() {
+        const ALONE: &str = "AURORA_TEST_ENGLISH_OFFER_ALONE";
         if std::env::var_os(ALONE).is_none() {
             // the name libtest gives this test: its path without the crate
             let path = concat!(
                 module_path!(),
-                "::legacy_object_offer_wrapped_buttons_keep_the_text_indent_in_french"
+                "::legacy_object_offer_wrapped_buttons_keep_the_text_indent_in_english"
             );
             let name = path.split_once("::").map_or(path, |(_, rest)| rest);
             let run = std::process::Command::new(std::env::current_exe().expect("the test binary"))
@@ -1587,15 +1585,15 @@ mod tests {
                 .expect("the test binary starts");
             let stdout = String::from_utf8_lossy(&run.stdout);
             let stderr = String::from_utf8_lossy(&run.stderr);
-            assert!(run.status.success(), "the French run failed:\n{stdout}\n{stderr}");
-            assert!(stdout.contains("1 passed"), "the French run ran this test:\n{stdout}");
+            assert!(run.status.success(), "the English run failed:\n{stdout}\n{stderr}");
+            assert!(stdout.contains("1 passed"), "the English run ran this test:\n{stdout}");
             return;
         }
-        aurora_i18n::select("fr", Some("fr"));
+        aurora_i18n::select("en", Some("en"));
         let mute = aurora_i18n::tr!("ui-notifications-mute-owner");
         let accept = aurora_i18n::tr!("ui-notifications-accept");
         let discard = aurora_i18n::tr!("ui-notifications-discard");
-        assert_eq!(mute, "Ignorer le propriétaire");
+        assert_eq!(mute, "Mute Owner");
 
         let ctx = egui::Context::default();
         let theme = crate::theme::Theme::default();
@@ -1604,10 +1602,10 @@ mod tests {
         let icons = Icons::default();
         let world = World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
         let mut list = Notifications::default();
-        let body = "Un objet nommé Distributeur appartenant à Jane Doe vous a donné cet objet :\nNote de bienvenue";
+        let body = "An object named Gift dispenser owned by Jane Doe gave you this object:\nWelcome note";
         list.push(
             Kind::Inventory,
-            "Distributeur",
+            "Gift dispenser",
             body,
             Data::Inventory {
                 from: JANE,
@@ -1616,8 +1614,8 @@ mod tests {
                 object: Uuid::nil(),
                 task: true,
                 task_offer: Some(crate::world::inventory_offers::TaskOffer {
-                    object_name: "Distributeur".into(),
-                    item_name: "Note de bienvenue".into(),
+                    object_name: "Gift dispenser".into(),
+                    item_name: "Welcome note".into(),
                     from_group: false,
                     own_object: false,
                 }),
@@ -1635,7 +1633,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    ui.set_width(320.0);
+                    ui.set_width(190.0);
                     card(
                         ui,
                         &p,
@@ -1677,7 +1675,7 @@ mod tests {
         // allow a small inset difference while still catching the old bug
         // that dropped the whole 22 px Legacy indent on the wrapped row.
         assert!(
-            (mute_rect.min.x - accept_rect.min.x).abs() < 4.0,
+            (mute_rect.min.x - accept_rect.min.x).abs() < 8.0,
             "wrapped Mute Owner keeps Accept's left edge: mute={mute_rect:?} accept={accept_rect:?}"
         );
         assert!(

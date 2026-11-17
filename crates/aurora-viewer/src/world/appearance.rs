@@ -74,10 +74,10 @@ pub enum Action {
     WearBases(Vec<Uuid>),
     /// Stop tracking the active base and remove its exclusive items.
     ClearBase,
-    /// Set or clear a saved outfit's ordinary folder link to a base.
-    SetBaseLink {
+    /// Replace the linked base folders as one multi-select edit.
+    SetBaseLinks {
         outfit: Uuid,
-        base: Option<Uuid>,
+        bases: Vec<Uuid>,
     },
     Wear(Uuid, bool),
     WearOutfits {
@@ -997,7 +997,7 @@ pub fn plan(inv: &Inventory, action: Action, worn: &HashMap<Uuid, u8>) -> Result
         | Action::WearBase(_)
         | Action::WearBases(_)
         | Action::ClearBase
-        | Action::SetBaseLink { .. }
+        | Action::SetBaseLinks { .. }
         | Action::ShowOriginal(_)
         | Action::Favorite(_)
         | Action::OutfitImage(_)

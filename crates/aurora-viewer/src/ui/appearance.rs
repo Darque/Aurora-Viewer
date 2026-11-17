@@ -83,6 +83,8 @@ pub struct AppearanceUi {
     reverse_sort: bool,
     pub pending: Option<(Uuid, bool)>,
     pub pending_actor: Uuid,
+    /// Cycle-skipping warning to show once a wear update is confirmed.
+    pub pending_warning: Option<String>,
     pub saved_new: bool,
     pub attachments: Vec<aurora_net::AttachRequest>,
     /// Only objects already worn when this COF write began may be detached

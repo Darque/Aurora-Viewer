@@ -3909,7 +3909,7 @@ impl App {
                 match result {
                     Ok(it) => {
                         self.world.inventory.add_items(vec![it]);
-                        self.appearance_ui.message.clear();
+                        self.appearance_ui.message = self.appearance_ui.pending_warning.take().unwrap_or_default();
                     }
                     Err(reason) => self.appearance_ui.message = reason,
                 }
@@ -3983,6 +3983,7 @@ impl App {
                     Err(reason) => {
                         self.appearance_ui.restore_base_after_outfit = None;
                         self.appearance_ui.pending_base = None;
+                        self.appearance_ui.pending_warning = None;
                         self.appearance_ui.pending_base_removals.clear();
                         self.appearance_ui.attachments.clear();
                         self.inventory_ui.message.clone_from(&reason);
@@ -22236,13 +22237,17 @@ impl ApplicationHandler for App {
             }
             if let Ok(view) = std::env::var("AURORA_DEMO_APPEARANCE") {
                 crate::world::appearance::seed_demo(&mut self.world.inventory, self.world.agent_id);
-                if view == "base-outfits" {
+                if matches!(view.as_str(), "base-outfits" | "base-outfits-cycle") {
                     self.appearance_ui.base_sets.data =
                         crate::world::base_outfits::seed_demo(&mut self.world.inventory, self.world.agent_id);
+                    if view == "base-outfits-cycle" {
+                        crate::world::base_outfits::seed_demo_cycle(&mut self.world.inventory, self.world.agent_id);
+                    }
                 }
                 // showcase: the gallery's showcase with folders, pictures and favorites
                 let showcase = view == "showcase"
                     || view == "base-outfits"
+                    || view == "base-outfits-cycle"
                     || view.starts_with("portrait")
                     || view == "photo-mode"
                     || view.starts_with("batch");

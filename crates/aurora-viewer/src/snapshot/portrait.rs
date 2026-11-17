@@ -81,6 +81,8 @@ pub struct PortraitSettings {
     /// The paid HD picture sent with the free thumbnail, and its side;
     /// both kept whatever "keep" says (`opening`).
     pub hd: bool,
+    /// The same larger picture saved as a local PNG instead of uploaded.
+    pub hd_local: bool,
     pub hd_side: HdSide,
 }
 
@@ -148,6 +150,12 @@ pub fn hd_total(each: Option<i32>, count: usize) -> Option<i32> {
     each.map(|each| each.saturating_mul(i32::try_from(count).unwrap_or(i32::MAX)))
 }
 
+/// Every item pictured from an outfit is in the confirmed Current Outfit.
+/// Additional worn items are fine, as with a base plus a clothing outfit.
+pub fn items_worn(required: &std::collections::HashSet<uuid::Uuid>, worn: &std::collections::HashSet<uuid::Uuid>) -> bool {
+    !required.is_empty() && required.is_subset(worn)
+}
+
 /// The HD picture's inventory name, from the Legacy Viewer's
 /// `outfit_photo_string` ("Photo of "[OUTFIT_NAME]" outfit",
 /// panel_outfit_gallery.xml), cut to the 63 bytes an item name holds.
@@ -175,6 +183,7 @@ impl Default for PortraitSettings {
             hide_others: true,
             keep: true,
             hd: false,
+            hd_local: false,
             hd_side: HdSide::Side512,
         }
     }
@@ -190,6 +199,7 @@ impl PortraitSettings {
             Self {
                 keep: false,
                 hd: saved.hd,
+                hd_local: saved.hd_local,
                 hd_side: saved.hd_side,
                 ..Self::default()
             }
@@ -430,6 +440,7 @@ mod tests {
         let saved = PortraitSettings {
             keep: false,
             hd: true,
+            hd_local: false,
             hd_side: HdSide::Side1024,
             framing: Framing::Face,
             ..Default::default()
@@ -441,6 +452,16 @@ mod tests {
         assert!(!PortraitSettings::default().hd, "off unless chosen");
         assert_eq!(HdSide::Side512.side(), 512);
         assert_eq!(HdSide::Side1024.side(), SHOT_SIDE, "the photo is drawn at the largest side");
+
+        let local = PortraitSettings {
+            keep: false,
+            hd_local: true,
+            hd_side: HdSide::Side1024,
+            ..Default::default()
+        };
+        let opened = PortraitSettings::opening(&local);
+        assert!(opened.hd_local);
+        assert!(!opened.hd);
     }
 
     #[test]
@@ -451,6 +472,18 @@ mod tests {
         // an unknown balance leaves the check to the server
         assert_eq!(hd_offer(Some(10), None), HdOffer::Ready(10));
         assert_eq!(hd_offer(Some(0), Some(0)), HdOffer::Ready(0));
+    }
+
+    #[test]
+    fn an_outfit_can_be_pictured_alongside_other_worn_items() {
+        let required = [uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2)].into_iter().collect();
+        let worn = [uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(3)]
+            .into_iter()
+            .collect();
+        assert!(items_worn(&required, &worn));
+        let incomplete = [uuid::Uuid::from_u128(1)].into_iter().collect();
+        assert!(!items_worn(&required, &incomplete));
+        assert!(!items_worn(&std::collections::HashSet::new(), &worn));
     }
 
     #[test]

@@ -489,22 +489,18 @@ mod tests {
     fn age_strings() {
         let now = date(2024, 9, 15) + 3600.0;
         assert_eq!(
-            age_from_date("fr", date(2007, 5, 12), now),
+            age_from_date("en", date(2007, 5, 12), now),
             format!(
-                "17 ans 4 mois; {} jours",
+                "17 years 4 months; {} days",
                 days_from_civil(2024, 9, 15) - days_from_civil(2007, 5, 12)
             )
         );
-        assert_eq!(age_from_date("fr", date(2023, 9, 15), now), "1 an; 366 jours");
-        assert_eq!(age_from_date("fr", date(2024, 7, 20), now), "1 mois; 57 jours");
-        // borrowing a month: 20 Aug → 15 Sep is 26 days
-        assert_eq!(age_from_date("fr", date(2024, 8, 20), now), "3 semaines; 26 jours");
-        assert_eq!(age_from_date("fr", date(2024, 9, 14), now), "1 jour");
-        assert_eq!(age_from_date("fr", date(2024, 9, 15), now), "Inscrit aujourd'hui");
         assert_eq!(age_from_date("en", date(2023, 9, 15), now), "1 year; 366 days");
         assert_eq!(age_from_date("en", date(2024, 7, 20), now), "1 month; 57 days");
+        // borrowing a month: 20 Aug → 15 Sep is 26 days
         assert_eq!(age_from_date("en", date(2024, 8, 20), now), "3 weeks; 26 days");
         assert_eq!(age_from_date("en", date(2024, 9, 14), now), "1 day");
+        assert_eq!(age_from_date("en", date(2024, 9, 15), now), "Joined today");
     }
 
     #[test]
@@ -514,11 +510,11 @@ mod tests {
             ..Default::default()
         };
         let now = date(2024, 9, 15);
-        assert!(birth_text_in("fr", &p, false, now).is_some_and(|t| t.starts_with("12/05/2007\n(17 ans 4 mois")));
+        assert!(birth_text_in("en", &p, false, now).is_some_and(|t| t.starts_with("05/12/2007\n(17 years 4 months")));
         p.hide_age = Some(true);
-        assert_eq!(birth_text_in("fr", &p, false, now).as_deref(), Some("12/05"));
+        assert_eq!(birth_text_in("en", &p, false, now).as_deref(), Some("05/12"));
         // our own profile always shows the full date
-        assert!(birth_text_in("fr", &p, true, now).is_some_and(|t| t.starts_with("12/05/2007")));
+        assert!(birth_text_in("en", &p, true, now).is_some_and(|t| t.starts_with("05/12/2007")));
         assert_eq!(birth_text_in("en", &p, false, now).as_deref(), Some("05/12"));
         assert!(birth_text_in("en", &p, true, now).is_some_and(|t| t.starts_with("05/12/2007\n(17 years 4 months")));
     }
@@ -530,23 +526,23 @@ mod tests {
             ..Default::default()
         };
         let now = date(2026, 10, 14);
-        assert_eq!(birth_line_in("fr", &p, false, now).as_deref(), Some("02/04/2019 · 7 ans 6 mois"));
+        assert_eq!(
+            birth_line_in("en", &p, false, now).as_deref(),
+            Some("04/02/2019 · 7 years 6 months")
+        );
         assert_eq!(
             birth_line_in("en", &p, false, now).as_deref(),
             Some("04/02/2019 · 7 years 6 months")
         );
         p.born = Some(date(2026, 9, 20));
-        assert_eq!(birth_line_in("fr", &p, false, now).as_deref(), Some("20/09/2026 · 3 semaines"));
+        assert_eq!(birth_line_in("en", &p, false, now).as_deref(), Some("09/20/2026 · 3 weeks"));
         p.born = Some(date(2026, 10, 14));
-        assert_eq!(
-            birth_line_in("fr", &p, false, now).as_deref(),
-            Some("14/10/2026 · Inscrit aujourd'hui")
-        );
+        assert_eq!(birth_line_in("en", &p, false, now).as_deref(), Some("10/14/2026 · Joined today"));
         // a hidden age: the day and the month alone, except on our profile
         p.hide_age = Some(true);
-        assert_eq!(birth_line_in("fr", &p, false, now).as_deref(), Some("14/10"));
-        assert!(birth_line_in("fr", &p, true, now).is_some_and(|t| t.starts_with("14/10/2026 · ")));
-        assert_eq!(birth_line_in("fr", &AvatarProfile::default(), false, now), None);
+        assert_eq!(birth_line_in("en", &p, false, now).as_deref(), Some("10/14"));
+        assert!(birth_line_in("en", &p, true, now).is_some_and(|t| t.starts_with("10/14/2026 · ")));
+        assert_eq!(birth_line_in("en", &AvatarProfile::default(), false, now), None);
     }
 
     #[test]

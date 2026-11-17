@@ -732,7 +732,9 @@ pub fn show(
                     super::aurora_bg::radial_glow(&painter, r.center(), 150.0, p.violet, 0.42);
                 }
                 ui.add_space(2.0);
-                ui.label(RichText::new(aurora_version::VIEWER_NAME).size(34.0).strong().color(p.ink));
+                // Keep the longer Developer identity on one line in a narrow login card.
+                let brand_size = if screen.width() < 1400.0 { 30.0 } else { 34.0 };
+                ui.label(RichText::new(aurora_version::VIEWER_NAME).size(brand_size).strong().color(p.ink));
                 ui.label(RichText::new(client_tagline()).size(13.0).color(p.violet_pale));
                 ui.add_space(18.0);
             });

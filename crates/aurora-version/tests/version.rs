@@ -53,9 +53,10 @@ fn sources_without_tags_or_git_are_clearly_identified() {
 
 #[test]
 fn runtime_and_http_read_the_compiled_version() {
+    assert_eq!(aurora_version::VIEWER_NAME, "Aurora Viewer Developer");
     assert_eq!(
         aurora_version::user_agent(),
-        format!("AuroraViewerCustom/{}", aurora_version::version())
+        format!("AuroraViewerDeveloper/{}", aurora_version::version())
     );
     let version = semver::Version::parse(aurora_version::version()).unwrap();
     assert!(aurora_version::login_version().starts_with(&format!("{}.{}.{}.", version.major, version.minor, version.patch)));

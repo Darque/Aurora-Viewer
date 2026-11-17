@@ -10291,10 +10291,10 @@ the Appearance window then opens on its Worn tab with the five objects
 worn. `cold` hides the five items from the inventory until FetchItems asks
 for them (`5 to look up`), as a cold inventory cache.
 
-**`AURORA_DEMO_APPEARANCE=base-outfits|gallery|gallery-fit|gallery-fill|showcase|portrait|portrait-not-worn|portrait-shot|portrait-bust|portrait-face|portrait-profile|photo-mode|portrait-hd|portrait-hd-poor|photo-mode-hd|batch|batch-run|batch-hd|batch-hd-poor|outfits|multi-gallery|multi-outfits|multi-items|multi-worn|clipboard|folders|folders-outfits|folders-many|folders-many-outfits|worn|save|edit|layers|layers-drag|layers-hold|wearables|wearables-outfits|wearables-edit|menu|duplicates|broken|take-off-folder|json-import|json-partial|xml|xml-unavailable`**
+**`AURORA_DEMO_APPEARANCE=base-outfits|base-outfits-cycle|gallery|gallery-fit|gallery-fill|showcase|portrait|portrait-base|portrait-not-worn|portrait-shot|portrait-bust|portrait-face|portrait-profile|photo-mode|portrait-hd|portrait-hd-local|portrait-hd-poor|photo-mode-hd|batch|batch-run|batch-hd|batch-hd-poor|outfits|multi-gallery|multi-outfits|multi-items|multi-worn|clipboard|folders|folders-outfits|folders-many|folders-many-outfits|worn|save|edit|layers|layers-drag|layers-hold|wearables|wearables-outfits|wearables-edit|menu|duplicates|broken|take-off-folder|json-import|json-partial|xml|xml-unavailable`**
 — opens Appearance with four synthetic outfits:
 
-- `base-outfits`: opens the showcase on All base outfits with synthetic body
+- `base-outfits` / `base-outfits-cycle`: opens the showcase on All base outfits with synthetic body
   bases, a hair base containing a hair mesh and tinted eyebrow tattoo, and two
   clothing outfits. Appearance tabs should read Outfit gallery, Base outfits,
   Outfits and Worn; the gallery rail should read Base outfits, Outfits,
@@ -10306,8 +10306,13 @@ for them (`5 to look up`), as a cold inventory cache.
   while clothing loads; the hair mesh and eyebrow tint both appear. Then wear
   Clothes without base and verify the active bases stay on. Swap to Base A and
   verify clothing and the independent hair base stay on. Linked outfit cards
-  and their base picker show linked base names; rows in the Outfits tab show
-  only outfit names. Adding a path back to the clothing folder must be refused
+  and their base picker show linked base names. Right-click a base and choose
+  Linked bases: selecting several checkboxes keeps the submenu open, and a base
+  may link to another base unless it creates a cycle. Wear a base that links
+  another and verify each original appears once. In `base-outfits-cycle`, wear
+  Base A and verify valid items apply, the repeated folder is skipped, and the
+  warning names it. Rows in the Outfits tab show only outfit names. Adding a
+  path back to the clothing folder must be refused
   without changing the Current Outfit. Right-click a base and a clothing outfit:
   each Save to this outfit action should be enabled, and move actions should
   name their destination. Confirm a save to a base and verify it stores the
@@ -10370,7 +10375,7 @@ gallery's double-click continues to open the outfit's contents.
   and a hover Wear, and Copy outfit list. Make the window narrower: under
   820 points the rail becomes a menu over the grid, under 600 the preview
   gives way to the selection card under the grid.
-- `portrait`, `portrait-not-worn`, `portrait-shot`, `portrait-bust`,
+- `portrait`, `portrait-base`, `portrait-not-worn`, `portrait-shot`, `portrait-bust`,
   `portrait-face`, `portrait-profile`, `photo-mode`: the showcase, then at
   frame 600 the outfit's auto portrait (Fider #447) of the outfit worn (in
   that framing or angle), of one not worn, or the square photo mode;
@@ -10384,13 +10389,15 @@ gallery's double-click continues to open the outfit's contents.
   backdrops flatten the cut-out avatar over dark, grey or light, The scene
   keeps the region; Studio lights the avatar from behind the camera. Cancel
   (or the X) puts the camera, the pose and the light back. Not worn: Take
-  is off and "Wear it for the photo" wears it; once the photo is used or
-  cancelled, a small window offers "Put … back on" or "Keep this outfit".
+  is off and "Wear it for the photo" wears it. `portrait-base` pictures Base
+  A while clothing is also worn; Take stays enabled when all Base A items are
+  present. Any missing pictured item keeps Take disabled. Once the photo is
+  used or cancelled, a small window offers "Put … back on" or "Keep this outfit".
   Photo mode: the viewfinder with a square frame whatever the photo window
   chosen, the banner "Photo for the outfit …", the helpers Reframe on my
   avatar / A pose / Studio backdrop, the shutter shows the photo with Use for
   the outfit / Retake. The log says `outfit portrait: …` at each step.
-- `portrait-hd`, `portrait-hd-poor`, `photo-mode-hd`: the same, with the
+- `portrait-hd`, `portrait-hd-local`, `portrait-hd-poor`, `photo-mode-hd`: the same, with the
   paid HD picture chosen at 1024 × 1024 and a fictional balance (L$ 500, or
   L$ 5 for `-poor`; the demo's texture price is L$ 10). The HD picture
   block under the choices (and under the photo in the photo mode): "HD
@@ -10401,6 +10408,9 @@ gallery's double-click continues to open the outfit's contents.
   preview the HD one, the balance drops by L$ 10 and the outfit's folder
   holds "Photo of "…" outfit"; a second HD picture sends the first to the
   Trash. The log says `outfit HD picture: …` at each step.
+  In `portrait-hd-local`, choose **HD Picture locally**, take and use the
+  portrait, save the PNG at 1024 × 1024, and confirm the free outfit thumbnail
+  is set while there is no paid HD upload or balance change.
 - `batch`, `batch-run`: the showcase, then at frame 600 the batch
   portraits' window (Fider #447, the banner's Take the portraits) over the
   demo's outfits: those without a picture ticked, those with one to tick to

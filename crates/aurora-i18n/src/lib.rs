@@ -1,6 +1,5 @@
-//! Shared UI language and Fluent messages, including network notifications.
-//! Selection follows LLUI::getUILanguage (indra/llui/llui.cpp): saved choice,
-//! system language, then English. Aurora has no separate installer language.
+//! English UI language and Fluent messages, including network notifications.
+//! Unsupported saved or system languages fall back to English.
 
 use fluent_bundle::concurrent::FluentBundle;
 use fluent_bundle::{FluentArgs, FluentResource};
@@ -15,7 +14,7 @@ struct Catalog {
     code: &'static str,
     bundle: FluentBundle<FluentResource>,
     // Resolve plain messages once, so labels neither allocate nor lock in
-    // the frame loop. Both catalogs live for the lifetime of the process.
+    // the frame loop. The English catalog lives for the process lifetime.
     plain: HashMap<String, String>,
 }
 
@@ -35,8 +34,7 @@ static CUSTOM: AtomicBool = AtomicBool::new(false);
 static WRAPPED: LazyLock<RwLock<HashMap<(usize, &'static str), &'static str>>> = LazyLock::new(Default::default);
 static SYMBOLS: RwLock<Vec<&'static str>> = RwLock::new(Vec::new());
 
-/// Cache composite label tables independently for every bundled locale.
-/// Switching languages selects another table without allocating per frame.
+/// Cache composite label tables for the bundled English catalog.
 pub struct Localized<T>(OnceLock<Vec<OnceLock<T>>>);
 
 impl<T> Default for Localized<T> {
@@ -356,7 +354,11 @@ mod tests {
         set_currency("KC");
         assert_eq!(currency(), "KC");
         assert_eq!(text_in("en", "currency-title"), "Buy KC");
-        assert_eq!(text_in("fr", "currency-title").matches("KC").count(), 1);
+        assert_eq!(
+            text_in("fr", "currency-title").matches("KC").count(),
+            1,
+            "unsupported locale falls back to English"
+        );
         assert!(
             std::ptr::eq(text_in("en", "currency-title"), text_in("en", "currency-title")),
             "cached"
@@ -372,15 +374,15 @@ mod tests {
     #[test]
     fn missing_messages_and_variables_use_the_english_message() {
         let english = fixture("en", "greeting = Hello { $name }\nonly-english = English fallback");
-        let french = fixture("fr", "greeting = Bonjour { $unavailable }");
+        let unsupported = fixture("xx", "greeting = Bonjour { $unavailable }");
         let mut args = Args::new();
         args.set("name", "Zoé");
         assert_eq!(
-            render_with_fallback(&french, &english, "greeting", &args).as_deref(),
+            render_with_fallback(&unsupported, &english, "greeting", &args).as_deref(),
             Some("Hello Zoé")
         );
         assert_eq!(
-            render_with_fallback(&french, &english, "only-english", &args).as_deref(),
+            render_with_fallback(&unsupported, &english, "only-english", &args).as_deref(),
             Some("English fallback")
         );
         assert!(render(&english, "unknown-key", &args).is_none());
@@ -390,11 +392,11 @@ mod tests {
     #[test]
     fn decimal_separator_follows_the_catalog() {
         assert_eq!(number_text_in("en", "-1234.50"), "-1234.50");
-        assert_eq!(number_text_in("fr", "-1234.50"), "-1234,50");
+        assert_eq!(number_text_in("fr", "-1234.50"), "-1234.50");
         assert_eq!(number_text_in("unsupported", "1.25"), "1.25");
         assert_eq!(number_text_in("fr", "42"), "42");
         assert_eq!(integer_in("en", 1_234_567), "1,234,567");
-        assert_eq!(integer_in("fr", -88_000), "-88\u{a0}000");
+        assert_eq!(integer_in("fr", -88_000), "-88,000");
         assert_eq!(integer_in("en", i64::MIN), "-9,223,372,036,854,775,808");
         assert_eq!(number_text_in("ja", "-1234.50"), "-1234.50");
         assert_eq!(integer_in("ja", 1_234_567), "1,234,567");
@@ -407,9 +409,9 @@ mod tests {
         assert_eq!(text("language-system"), "System language");
         let english = LABELS.get(|| vec![text("language-system")]);
         select("fr", None);
-        assert_eq!(text("language-system"), "Langue du système");
-        let french = LABELS.get(|| vec![text("language-system")]);
-        assert_ne!(english[0], french[0]);
+        assert_eq!(text("language-system"), "System language");
+        let fallback = LABELS.get(|| vec![text("language-system")]);
+        assert_eq!(english[0], fallback[0]);
         select("en", None);
         assert!(std::ptr::eq(english, LABELS.get(Vec::new)));
         assert_eq!(text("unknown-key"), "unknown-key");

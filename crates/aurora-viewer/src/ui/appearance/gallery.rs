@@ -18,6 +18,8 @@ pub(super) struct State {
     focus: bool,
     confirm: Option<(Uuid, bool)>,
     copy: Option<OutfitCopy>,
+    /// Checkbox choices retained while a Linked bases menu remains focused.
+    base_link_selection: Option<(Uuid, HashSet<Uuid>, u64)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -297,37 +299,67 @@ fn menu_body(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceU
     ) {
         actions.push(Action::MarkBase(id, !is_base));
     }
-    if !is_base {
-        menu::submenu(ui, p, "folder-filled", aurora_i18n::tr!("base-outfits-choose"), base_ready, |ui| {
-            let linked = crate::world::base_outfits::linked_bases(inv, id, &st.base_sets.data.folders);
-            if menu::check(
+    let can_open_base_menu = !folder.library && folder.info.type_default == model::FT_OUTFIT;
+    menu::submenu(
+        ui,
+        p,
+        "folder-filled",
+        aurora_i18n::tr!("base-outfits-choose"),
+        can_open_base_menu,
+        |ui| {
+            let frame = ui.ctx().cumulative_frame_nr();
+            let linked = st
+                .gallery
+                .base_link_selection
+                .as_ref()
+                .filter(|(outfit, _, last_frame)| *outfit == id && frame.saturating_sub(*last_frame) <= 2)
+                .map(|(_, selected, _)| selected.clone())
+                .unwrap_or_else(|| {
+                    crate::world::base_outfits::linked_bases(inv, id, &st.base_sets.data.folders)
+                        .into_iter()
+                        .collect()
+                });
+            let mut linked = linked;
+            if menu::check_keep_open(
                 ui,
                 p,
                 "x",
                 aurora_i18n::tr!("base-outfits-none"),
                 linked.is_empty(),
-                !linked.is_empty(),
+                base_ready && !linked.is_empty(),
             ) {
-                actions.push(Action::SetBaseLink { outfit: id, base: None });
+                linked.clear();
+                actions.push(Action::SetBaseLinks {
+                    outfit: id,
+                    bases: Vec::new(),
+                });
             }
             let mut ids = st.base_sets.data.folders.clone();
             ids.extend(linked.iter().copied());
             let mut bases: Vec<_> = ids
                 .iter()
-                .filter_map(|id| crate::world::base_outfits::display_name(inv, *id).map(|name| (name.to_owned(), *id)))
+                .filter_map(|target| crate::world::base_outfits::display_name(inv, *target).map(|name| (name.to_owned(), *target)))
                 .collect();
             bases.sort();
             for (name, target) in bases {
                 let selected = linked.contains(&target);
-                if menu::check(ui, p, "folder-filled", &name, selected, true) {
-                    actions.push(Action::SetBaseLink {
+                if menu::check_keep_open(ui, p, "folder-filled", &name, selected, base_ready && target != id) {
+                    if selected {
+                        linked.remove(&target);
+                    } else {
+                        linked.insert(target);
+                    }
+                    let mut selected: Vec<_> = linked.iter().copied().collect();
+                    selected.sort_unstable();
+                    actions.push(Action::SetBaseLinks {
                         outfit: id,
-                        base: Some(target),
+                        bases: selected,
                     });
                 }
             }
-        });
-    }
+            st.gallery.base_link_selection = Some((id, linked, frame));
+        },
+    );
     menu::separator(ui, p);
     // LLOutfitContextMenu's Outfit.Thumbnail
     if menu::item_if(ui, p, "photo-filled", aurora_i18n::tr!("common-image-2"), rules.folder) {
@@ -688,7 +720,7 @@ mod tests {
         let shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
         let pos = shapes.iter().find_map(|s| text_position(&s.shape, &label)).expect("outfit tile") + egui::vec2(10.0, -50.0);
         assert!(click(&ctx, &mut world, &mut st, pos, PointerButton::Secondary).is_empty());
-        assert_eq!(st.outfit_selection.focus, Some(Uuid::from_u128(704)));
+        assert_eq!(st.outfit_selection.focus, Some(Uuid::from_u128(703)));
         let mut shapes = Vec::new();
         for _ in 0..4 {
             shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
@@ -710,6 +742,7 @@ mod tests {
         }
         let pos = shapes
             .iter()
+            .rev()
             .find_map(|s| text_position(&s.shape, aurora_i18n::tr!("common-add-to-favorites")))
             .expect("favorite option");
         let actions = click(&ctx, &mut world, &mut st, pos, PointerButton::Primary);
@@ -1107,5 +1140,79 @@ mod tests {
             .expect("save to every base outfit");
         click(&ctx, &mut world, &mut st, save_pos, PointerButton::Primary);
         assert_eq!(st.gallery.confirm, Some((Uuid::from_u128(703), false)));
+    }
+
+    #[test]
+    fn base_outfits_can_select_multiple_linked_bases_without_closing_the_menu() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::default().apply(&ctx, 1.0);
+        let _icons = crate::ui::icons::Icons::load(&ctx, None);
+        let mut world = World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
+        model::seed_demo(&mut world.inventory, Uuid::from_u128(1));
+        let mut st = AppearanceUi::default();
+        st.base_sets.data = crate::world::base_outfits::seed_demo(&mut world.inventory, Uuid::from_u128(1));
+        st.open(super::super::TAB_BASES, false);
+        st.search = "Base B".into();
+        for _ in 0..4 {
+            frame(&ctx, &mut world, &mut st, vec![]);
+        }
+
+        let shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
+        let base = shapes
+            .iter()
+            .rev()
+            .find_map(|shape| text_position(&shape.shape, "Base B"))
+            .expect("base outfit row");
+        click(&ctx, &mut world, &mut st, base, PointerButton::Secondary);
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
+        }
+        let linked_bases = aurora_i18n::tr!("base-outfits-choose");
+        let menu_row = shapes
+            .iter()
+            .rev()
+            .find_map(|shape| text_position(&shape.shape, linked_bases))
+            .expect("Linked bases on a base outfit");
+
+        for _ in 0..4 {
+            shapes = frame(&ctx, &mut world, &mut st, vec![Event::PointerMoved(menu_row)]).1;
+        }
+        let base_a = shapes
+            .iter()
+            .rev()
+            .find_map(|shape| text_position(&shape.shape, "Base A"))
+            .expect("first base checkbox");
+        let first = click(&ctx, &mut world, &mut st, base_a, PointerButton::Primary);
+        assert!(
+            matches!(&first[..], [Action::SetBaseLinks { outfit, bases }] if *outfit == Uuid::from_u128(703) && bases == &[Uuid::from_u128(702)]),
+            "{first:?}"
+        );
+
+        for _ in 0..4 {
+            shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
+        }
+        assert!(
+            shapes.iter().any(|shape| text_position(&shape.shape, "Hair Base").is_some()),
+            "the Linked bases menu stays open after the first choice"
+        );
+        let hair_base = shapes
+            .iter()
+            .rev()
+            .find_map(|shape| text_position(&shape.shape, "Hair Base"))
+            .expect("second base checkbox");
+        let second = click(&ctx, &mut world, &mut st, hair_base, PointerButton::Primary);
+        assert!(
+            matches!(&second[..], [Action::SetBaseLinks { outfit, bases }] if *outfit == Uuid::from_u128(703) && bases == &[Uuid::from_u128(702), Uuid::from_u128(750)]),
+            "{second:?}"
+        );
+        shapes.clear();
+        for _ in 0..4 {
+            shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
+        }
+        assert!(
+            shapes.iter().any(|shape| text_position(&shape.shape, "Base A").is_some()),
+            "the menu remains open after the second choice"
+        );
     }
 }

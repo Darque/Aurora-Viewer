@@ -32,12 +32,21 @@ For every prompt that requests code changes:
    only what still serves the user's current direction. Never use a destructive
    reset to discard uncommitted work.
 4. Make the requested sandbox changes and update the relevant documentation
-   and localization catalogues.
-5. Run the relevant checks and compile the viewer before pushing.
-6. Commit the completed work and push it to origin, the Darque sandbox
+   and English localization catalogue.
+5. Run rustfmt and the relevant workspace tests, then build the default
+   development viewer before testing it.
+6. Test the change in the offline demo/test environment first. After that,
+   test it online in Second Life with the `chase.sheryffe` account. The user
+   authorizes this low-risk account for generic-content testing. Use its
+   existing local login profile when available; never ask for, print, or save
+   its password or verification codes. If authentication needs user input,
+   let the user complete that step in the viewer, then continue the test.
+   Report offline and grid checks separately; a compile or unit test is not a
+   grid test.
+7. Commit the completed work and push it to origin, the Darque sandbox
    repository. Push to a topic branch such as sandbox/<topic> unless the user
    names another branch. Do not force-push.
-7. Never push to upstream, open a pull request to the official repository, or
+8. Never push to upstream, open a pull request to the official repository, or
    merge sandbox work back into the official repository unless the user gives
    a new, explicit instruction to do so.
 
@@ -48,18 +57,9 @@ conflict instead.
 
 ## Localization
 
-Official Aurora translations take precedence. Before adding a translation,
-check whether the official source already supplies the equivalent key and
-wording. Add sandbox localization only where an equivalent is missing or the
-user specifically requests a difference. The user will provide guidance on
-localization choices; do not invent translations or replace official wording
-without that guidance.
-
 All viewer-facing strings use the existing aurora_i18n mechanisms, not
-hard-coded labels. Keep every locale catalogue required by the current source
-in key parity and follow the current translation guide. When official source
-updates localization, take those changes first, then apply only the still
-needed user-directed changes.
+hard-coded labels. This sandbox is an English-only test candidate: keep only
+the English catalogue and do not add or maintain other locale catalogues.
 
 ## Build and verification
 
@@ -79,10 +79,10 @@ The PowerShell check script is for Windows. On another system, run the
 available Cargo checks and report any checks that could not run. Do not claim
 a visual or grid test from a compile or unit test.
 
-Prefer the offline demo for viewer behavior. An agent must not connect to a
-Second Life grid or handle account credentials; the user performs any grid
-login and grid validation. Keep build outputs, caches and logs out of source
-archives.
+The sandbox identifies itself to the viewer and grid as Aurora Viewer
+Developer, followed by the source version number generated from the official
+release tag and local source revision. Keep build outputs, caches and logs out
+of source archives.
 
 ## Permissions, privacy and policy
 
@@ -97,9 +97,8 @@ viewer without the rights required by the existing shared permission rules.
 Reuse those shared rule helpers rather than computing permission masks by
 hand.
 
-The sandbox identifies itself as Aurora Viewer Custom. A grid-test or
-distributed build must use a unique channel-and-version identity for that
-build and meet the applicable Terms acceptance, disclosure, privacy and
+Grid-facing functionality must use the Aurora Viewer Developer channel and
+source version. Meet applicable Terms acceptance, disclosure, privacy and
 licensing requirements. A local offline build is not proof of policy
 compliance.
 

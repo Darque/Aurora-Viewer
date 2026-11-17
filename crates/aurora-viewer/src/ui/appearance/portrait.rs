@@ -222,33 +222,67 @@ pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSetting
     widgets::checkbox(ui, p, &mut s.keep, aurora_i18n::tr!("ui-appearance-portrait-keep"));
 }
 
-/// The paid HD picture: its price, the side, and why it cannot be had now
-/// (the balance, the price not known, another on its way).
+/// The optional larger picture: upload it for the shown price, save it as a
+/// PNG locally, or keep only the free thumbnail.
 fn hd_choice(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSettings, hd: &HdView) {
-    let ready = matches!(hd.offer, HdOffer::Ready(_)) && !hd.busy && hd.confirm.is_none();
-    let label = match hd.offer {
+    ui.label(
+        RichText::new(aurora_i18n::tr!("ui-appearance-portrait-hd-title"))
+            .size(12.0)
+            .family(fonts::semibold(ui.ctx()))
+            .color(p.muted),
+    );
+    let upload_ready = matches!(hd.offer, HdOffer::Ready(_)) && !hd.busy && hd.confirm.is_none();
+    let upload = match hd.offer {
         HdOffer::Ready(cost) | HdOffer::Short(cost) => aurora_i18n::tr!("ui-appearance-portrait-hd", cost = cost).to_string(),
         HdOffer::Unknown => aurora_i18n::tr!("ui-appearance-portrait-hd-no-price").to_string(),
     };
-    let on = hd_box(
-        ui,
-        p,
-        s,
-        aurora_i18n::tr!("ui-appearance-portrait-hd-title"),
-        label,
-        ready,
-        matches!(hd.offer, HdOffer::Ready(_)),
-    );
+    ui.add_enabled_ui(upload_ready, |ui| {
+        if widgets::radio(ui, p, s.hd && !s.hd_local, upload).clicked() {
+            s.hd = true;
+            s.hd_local = false;
+        }
+    });
+    if widgets::radio(ui, p, s.hd_local, aurora_i18n::tr!("ui-appearance-portrait-hd-local")).clicked() {
+        s.hd = false;
+        s.hd_local = true;
+    }
+    if widgets::radio(ui, p, !s.hd && !s.hd_local, aurora_i18n::tr!("ui-appearance-portrait-hd-none")).clicked() {
+        s.hd = false;
+        s.hd_local = false;
+    }
+    let on = s.hd || s.hd_local;
+    ui.add_enabled_ui(on, |ui| {
+        let mut selected = HD_SIDES.iter().position(|v| *v == s.hd_side).unwrap_or(0);
+        let options = [("512 × 512", false), ("1024 × 1024", false)];
+        if widgets::segmented_size(ui, &options).x <= ui.available_width() {
+            if widgets::segmented(ui, p, &mut selected, &options) {
+                s.hd_side = HD_SIDES[selected];
+            }
+        } else {
+            for (i, (label, _)) in options.iter().enumerate() {
+                if widgets::radio(ui, p, selected == i, *label).clicked() {
+                    s.hd_side = HD_SIDES[i];
+                }
+            }
+        }
+    });
     let reason = match hd.offer {
-        HdOffer::Short(cost) => Some(aurora_i18n::tr!("ui-appearance-portrait-hd-short", cost = cost).to_string()),
-        HdOffer::Unknown => Some(aurora_i18n::tr!("ui-appearance-portrait-hd-unknown").to_string()),
+        HdOffer::Short(cost) if s.hd => Some(aurora_i18n::tr!("ui-appearance-portrait-hd-short", cost = cost).to_string()),
+        HdOffer::Unknown if s.hd => Some(aurora_i18n::tr!("ui-appearance-portrait-hd-unknown").to_string()),
         HdOffer::Ready(_) if hd.busy => Some(aurora_i18n::tr!("ui-appearance-portrait-hd-busy").to_string()),
-        HdOffer::Ready(_) => None,
+        _ => None,
     };
     match reason {
         Some(reason) => note(ui, p, "alert-triangle-filled", &reason),
-        None if on && hd.has_one => note(ui, p, "info-circle-filled", aurora_i18n::tr!("ui-appearance-portrait-hd-replaces")),
-        None => note(ui, p, "info-circle-filled", aurora_i18n::tr!("ui-appearance-portrait-hd-about")),
+        None if s.hd_local => note(
+            ui,
+            p,
+            "info-circle-filled",
+            aurora_i18n::tr!("ui-appearance-portrait-hd-local-about"),
+        ),
+        None if s.hd && hd.has_one => note(ui, p, "info-circle-filled", aurora_i18n::tr!("ui-appearance-portrait-hd-replaces")),
+        None if s.hd => note(ui, p, "info-circle-filled", aurora_i18n::tr!("ui-appearance-portrait-hd-about")),
+        None => {}
     }
 }
 
@@ -270,6 +304,7 @@ pub(super) fn hd_box(
     ui.add_enabled_ui(ready, |ui| {
         if widgets::checkbox(ui, p, &mut on, label).changed() {
             s.hd = on;
+            s.hd_local = false;
         }
     });
     ui.add_enabled_ui(ready && on, |ui| {

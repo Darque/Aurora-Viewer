@@ -30,10 +30,28 @@ fn resolvable_folder(inv: &Inventory, id: Uuid) -> bool {
 /// sharing a descendant is not a cycle. The walk is iterative so malformed
 /// inventory cannot exhaust the stack. Each original is returned once.
 pub fn resolve(inv: &Inventory, root: Uuid) -> Result<Vec<OutfitLink>, ResolveError> {
-    resolve_inner(inv, root, None)
+    resolve_walk(inv, root, None, false).map(|report| report.links)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolveReport {
+    pub links: Vec<OutfitLink>,
+    /// Folder links skipped because they revisited a folder on the active
+    /// path. Shared descendants reached by another complete path are safe.
+    pub cycles: Vec<Uuid>,
+}
+
+/// Resolve a base for wearing. A cyclic edge is skipped while its siblings
+/// continue, so malformed inventory cannot prevent the rest of the outfit.
+pub fn resolve_for_wear(inv: &Inventory, root: Uuid) -> Result<ResolveReport, ResolveError> {
+    resolve_walk(inv, root, None, true)
 }
 
 fn resolve_inner(inv: &Inventory, root: Uuid, forbidden: Option<Uuid>) -> Result<Vec<OutfitLink>, ResolveError> {
+    resolve_walk(inv, root, forbidden, false).map(|report| report.links)
+}
+
+fn resolve_walk(inv: &Inventory, root: Uuid, forbidden: Option<Uuid>, skip_cycles: bool) -> Result<ResolveReport, ResolveError> {
     enum Visit {
         Enter(Uuid),
         Leave(Uuid),
@@ -43,6 +61,7 @@ fn resolve_inner(inv: &Inventory, root: Uuid, forbidden: Option<Uuid>) -> Result
     let mut complete = HashSet::new();
     let mut targets = HashSet::new();
     let mut result = Vec::new();
+    let mut cycles = Vec::new();
     while let Some(visit) = pending.pop() {
         let id = match visit {
             Visit::Leave(id) => {
@@ -53,6 +72,12 @@ fn resolve_inner(inv: &Inventory, root: Uuid, forbidden: Option<Uuid>) -> Result
             Visit::Enter(id) => id,
         };
         if forbidden == Some(id) || active.contains(&id) {
+            if skip_cycles {
+                if !cycles.contains(&id) {
+                    cycles.push(id);
+                }
+                continue;
+            }
             return Err(ResolveError::Cycle);
         }
         if complete.contains(&id) {
@@ -92,7 +117,7 @@ fn resolve_inner(inv: &Inventory, root: Uuid, forbidden: Option<Uuid>) -> Result
         }
         pending.extend(children.into_iter().rev().map(Visit::Enter));
     }
-    Ok(result)
+    Ok(ResolveReport { links: result, cycles })
 }
 
 /// Request only the selected folders' reachable contents and missing item
@@ -200,36 +225,34 @@ pub fn linked_names(inv: &Inventory, outfit: Uuid, known: &HashSet<Uuid>) -> Opt
     (!names.is_empty()).then(|| names.join(", "))
 }
 
-/// Set an ordinary inventory folder link on a clothing outfit. Reject a
-/// link if the target already reaches the outfit, even through physical
-/// children or existing folder links. Recheck the graph when wearing it.
-pub fn set_link(
+/// Replace all linked bases on an outfit or base folder in one inventory
+/// mutation, preserving other folder links and rejecting cycles.
+pub fn set_links(
     inv: &Inventory,
     outfit: Uuid,
-    target: Option<Uuid>,
+    targets: &[Uuid],
     bases: &HashSet<Uuid>,
 ) -> Result<aurora_net::outfits::OutfitMutation, ResolveError> {
-    if !super::outfit_folders::in_my_outfits(inv, outfit) || bases.contains(&outfit) {
+    if !super::outfit_folders::in_my_outfits(inv, outfit) {
         return Err(ResolveError::Forbidden);
     }
     if !appearance::complete(inv, outfit) {
         return Err(ResolveError::Loading);
     }
     let mut links = appearance::folder_links(inv, outfit);
-    let existing = links
-        .iter()
-        .any(|link| link.folder && target == Some(link.target) && base_target(inv, link.target, bases));
-    if let Some(target) = target {
-        if !bases.contains(&target) {
+    let selected: HashSet<_> = targets.iter().copied().collect();
+    for target in &selected {
+        if !bases.contains(target) {
             return Err(ResolveError::Forbidden);
         }
-        if !existing {
-            resolve_inner(inv, target, Some(outfit))?;
-        }
+        resolve_inner(inv, *target, Some(outfit))?;
     }
-    links.retain(|link| !link.folder || !base_target(inv, link.target, bases) || target.is_some_and(|target| target != link.target));
-    if let Some(target) = target {
-        if !existing {
+    links.retain(|link| !link.folder || !base_target(inv, link.target, bases) || selected.contains(&link.target));
+    let mut present: HashSet<_> = links.iter().filter(|link| link.folder).map(|link| link.target).collect();
+    let mut selected: Vec<_> = selected.into_iter().collect();
+    selected.sort_unstable();
+    for target in selected {
+        if present.insert(target) {
             let folder = inv.folders.get(&target).ok_or(ResolveError::Missing)?;
             links.push(OutfitLink {
                 target,
@@ -375,8 +398,8 @@ pub fn current(inv: &Inventory, bases: &HashSet<Uuid>, previous: Option<&Active>
     let mut ranked = Vec::new();
     let mut loading = false;
     for id in bases {
-        let items = match resolve(inv, *id) {
-            Ok(items) => items,
+        let items = match resolve_for_wear(inv, *id) {
+            Ok(report) => report.links,
             Err(ResolveError::Loading) => {
                 loading = true;
                 continue;
@@ -900,7 +923,7 @@ pub fn plan(
             if !base_target(inv, id, &saved.folders) {
                 return Err(error_text(ResolveError::Forbidden));
             }
-            Ok((id, resolve(inv, id).map_err(error_text)?))
+            Ok((id, resolve_for_wear(inv, id).map_err(error_text)?.links))
         })
         .collect::<Result<_, String>>()?;
     let cof =
@@ -960,7 +983,7 @@ pub fn plan(
             if let Some(active) = active {
                 let mut incoming = Vec::new();
                 for folder in active.folders() {
-                    incoming.extend(resolve(inv, folder).map_err(error_text)?);
+                    incoming.extend(resolve_for_wear(inv, folder).map_err(error_text)?.links);
                 }
                 replace_for_clothing(inv, &mut change.links, saved.active.as_ref(), &incoming, &clothing);
                 proposed_active = Some(active);
@@ -1080,6 +1103,23 @@ pub fn seed_demo(inv: &mut Inventory, agent: Uuid) -> Saved {
         referenced: referenced(inv),
         active: current(inv, &known, None),
         generation: inv.generation,
+    }
+}
+
+/// Add a malformed base cycle to the offline fixture so the wear path can
+/// exercise cycle skipping and its warning without changing inventory on a grid.
+pub fn seed_demo_cycle(inv: &mut Inventory, agent: Uuid) {
+    let id = Uuid::from_u128;
+    for (source, target) in [(702, 703), (703, 702)] {
+        let mut links = appearance::folder_links(inv, id(source));
+        links.push(OutfitLink {
+            target: id(target),
+            name: display_name(inv, id(target)).unwrap_or("Base").to_owned(),
+            desc: String::new(),
+            folder: true,
+            inv_type: 8,
+        });
+        appearance::demo_replace(inv, agent, id(source), &links);
     }
 }
 
@@ -1278,7 +1318,7 @@ mod tests {
         let mut inv = inventory();
         super::seed_demo(&mut inv, id(1));
         let saved = Saved::default();
-        let unlinked = set_link(&inv, id(704), None, &saved.folders).expect("remove discovered link");
+        let unlinked = set_links(&inv, id(704), &[], &saved.folders).expect("remove discovered link");
         assert!(!unlinked.links.iter().any(|link| link.folder && link.target == id(702)));
         let (change, _, active) =
             plan(&inv, appearance::Action::Wear(id(704), false), &HashMap::new(), &saved).expect("wear linked outfit");
@@ -1294,20 +1334,53 @@ mod tests {
         super::seed_demo(&mut cyclic, id(1));
         let bases = folders(&cyclic);
         add_link(&mut cyclic, id(702), id(704));
-        assert!(matches!(
-            set_link(&cyclic, id(704), Some(id(702)), &bases),
-            Err(ResolveError::Cycle)
-        ));
+        assert!(matches!(set_links(&cyclic, id(704), &[id(702)], &bases), Err(ResolveError::Cycle)));
 
         let mut inv = inventory();
         super::seed_demo(&mut inv, id(1));
         let bases = folders(&inv);
-        let link = set_link(&inv, id(704), Some(id(702)), &bases).expect("link base");
+        let link = set_links(&inv, id(704), &[id(702)], &bases).expect("link base");
         assert!(link.links.iter().any(|link| link.folder && link.target == id(702)));
         demo_replace(&mut inv, id(1), id(704), &link.links);
         add_link(&mut inv, id(702), id(704));
-        let remove = set_link(&inv, id(704), Some(id(702)), &bases).expect("remove cyclic link");
+        let remove = set_links(&inv, id(704), &[], &bases).expect("remove cyclic link");
         assert!(!remove.links.iter().any(|link| link.folder && link.target == id(702)));
+    }
+
+    #[test]
+    fn base_to_base_links_are_allowed_and_checked_for_cycles() {
+        let mut inv = inventory();
+        super::seed_demo(&mut inv, id(1));
+        let bases = folders(&inv);
+        assert!(bases.contains(&id(702)) && bases.contains(&id(703)));
+        assert!(crate::world::outfit_folders::in_my_outfits(&inv, id(702)));
+        assert!(appearance::complete(&inv, id(702)));
+        let linked = set_links(&inv, id(702), &[id(703)], &bases).expect("link one base from another");
+        assert!(linked.links.iter().any(|link| link.folder && link.target == id(703)));
+        demo_replace(&mut inv, id(1), id(702), &linked.links);
+        assert!(matches!(set_links(&inv, id(703), &[id(702)], &bases), Err(ResolveError::Cycle)));
+    }
+
+    #[test]
+    fn wearing_a_cyclic_base_skips_the_cycle_and_deduplicates_items() {
+        let mut inv = inventory();
+        add_link(&mut inv, id(702), id(703));
+        add_link(&mut inv, id(703), id(702));
+        let report = resolve_for_wear(&inv, id(702)).expect("the non-cyclic items remain wearable");
+        assert_eq!(report.cycles, vec![id(702)]);
+        let targets: Vec<_> = report.links.iter().map(|link| link.target).collect();
+        assert_eq!(targets.len(), targets.iter().collect::<HashSet<_>>().len());
+        assert!(!targets.is_empty());
+    }
+
+    #[test]
+    fn linked_base_selection_replaces_the_whole_set_in_one_mutation() {
+        let mut inv = inventory();
+        super::seed_demo(&mut inv, id(1));
+        let bases = folders(&inv);
+        let change = set_links(&inv, id(704), &[id(703), id(750)], &bases).expect("set both bases");
+        let selected: HashSet<_> = change.links.iter().filter(|link| link.folder).map(|link| link.target).collect();
+        assert!(selected.contains(&id(703)) && selected.contains(&id(750)));
     }
 
     #[test]
@@ -1315,22 +1388,22 @@ mod tests {
         let mut inv = inventory();
         super::seed_demo(&mut inv, id(1));
         let bases = folders(&inv);
-        let added = set_link(&inv, id(704), Some(id(702)), &bases).expect("add body base");
+        let added = set_links(&inv, id(704), &[id(702), id(703), id(750)], &bases).expect("add body base");
         demo_replace(&mut inv, id(1), id(704), &added.links);
         let linked: HashSet<_> = linked_bases(&inv, id(704), &bases).into_iter().collect();
         assert_eq!(linked, HashSet::from([id(702), id(703), id(750)]));
-        let removed = set_link(&inv, id(704), Some(id(702)), &bases).expect("remove body base");
+        let removed = set_links(&inv, id(704), &[id(703), id(750)], &bases).expect("remove body base");
         demo_replace(&mut inv, id(1), id(704), &removed.links);
         assert_eq!(linked_bases(&inv, id(704), &bases), vec![id(703), id(750)]);
     }
 
     #[test]
-    fn a_cycle_in_any_linked_base_refuses_the_whole_outfit_and_graph_walk_terminates() {
+    fn a_cycle_in_a_linked_base_is_skipped_and_graph_walk_terminates() {
         let mut inv = inventory();
         let saved = super::seed_demo(&mut inv, id(1));
         add_link(&mut inv, id(750), id(704));
         assert_eq!(resolve(&inv, id(750)), Err(ResolveError::Cycle));
-        assert!(plan(&inv, appearance::Action::Wear(id(704), false), &HashMap::new(), &saved).is_err());
+        assert!(plan(&inv, appearance::Action::Wear(id(704), false), &HashMap::new(), &saved).is_ok());
         let (folders, _) = graph(&inv, &[id(750)]);
         assert!(folders.len() <= inv.folders.len());
     }

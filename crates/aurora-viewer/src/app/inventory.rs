@@ -893,6 +893,7 @@ impl App {
     pub(super) fn apply_appearance_action_from(&mut self, action: crate::world::appearance::Action, actor: Uuid) {
         use crate::world::{appearance::Action, base_outfits};
         self.appearance_ui.base_sets.refresh_now(&self.world.inventory);
+        self.appearance_ui.pending_warning = None;
         if let Action::MarkBase(id, mark) = &action {
             let id = *id;
             let mark = *mark;
@@ -936,16 +937,14 @@ impl App {
                 actor,
             );
         }
-        if let Action::SetBaseLink { outfit, base } = &action {
+        if let Action::SetBaseLinks { outfit, bases } = &action {
             if self.appearance_ui.pending.is_some() {
                 return;
             }
-            if let Some(target) = base {
-                for command in base_outfits::prepare(&mut self.world.inventory, &[*target], self.world.agent_id) {
-                    self.send(command);
-                }
+            for command in base_outfits::prepare(&mut self.world.inventory, bases, self.world.agent_id) {
+                self.send(command);
             }
-            match base_outfits::set_link(&self.world.inventory, *outfit, *base, &self.appearance_ui.base_sets.data.folders) {
+            match base_outfits::set_links(&self.world.inventory, *outfit, bases, &self.appearance_ui.base_sets.data.folders) {
                 Ok(change) => {
                     let request = Uuid::new_v4();
                     self.appearance_ui.pending = Some((request, false));
@@ -1117,6 +1116,19 @@ impl App {
             .into_iter()
             .map(|id| crate::world::inventory::actions::original(&self.world.inventory, id).unwrap_or(id))
             .collect();
+        let mut warning_roots = base_to_wear.clone();
+        if let Some(active) = &self.appearance_ui.base_sets.data.active {
+            warning_roots.extend(active.folders());
+        }
+        warning_roots.sort_unstable();
+        warning_roots.dedup();
+        let mut skipped_cycles: Vec<_> = warning_roots
+            .iter()
+            .filter_map(|root| base_outfits::resolve_for_wear(&self.world.inventory, *root).ok())
+            .flat_map(|report| report.cycles)
+            .collect();
+        skipped_cycles.sort_unstable();
+        skipped_cycles.dedup();
         match base_outfits::plan(
             &self.world.inventory,
             action,
@@ -1126,6 +1138,14 @@ impl App {
             Ok((change, sync, active)) => {
                 self.appearance_ui.pending_base =
                     active.or_else(|| sync.then(|| self.appearance_ui.base_sets.data.active.clone()).flatten());
+                self.appearance_ui.pending_warning = (!skipped_cycles.is_empty()).then(|| {
+                    let folders = skipped_cycles
+                        .iter()
+                        .filter_map(|id| base_outfits::display_name(&self.world.inventory, *id))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    aurora_i18n::tr!("world-appearance-cyclic-linked-base-skipped", folders = folders.as_str()).to_owned()
+                });
                 let request = uuid::Uuid::new_v4();
                 self.appearance_ui.pending = Some((request, sync));
                 self.appearance_ui.pending_actor = actor;

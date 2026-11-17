@@ -1527,22 +1527,16 @@ mod tests {
     use crate::build::ui::Shortcut;
 
     /// LLKeyboard names KEY_HOME "Home" (indra/llwindow/llkeyboard.cpp).
-    /// French keyboards print Début. Japanese keyboards print Home.
     #[test]
     fn the_home_key_is_labelled_home() {
         assert_eq!(aurora_i18n::text_in("en", "keybinds-origin"), "Home");
-        assert_eq!(aurora_i18n::text_in("ja", "keybinds-origin"), "Home");
-        assert_eq!(aurora_i18n::text_in("fr", "keybinds-origin"), "Début");
         assert_eq!(key_label("Home"), aurora_i18n::text_in(aurora_i18n::language(), "keybinds-origin"));
     }
 
-    /// LLKeyboard names KEY_END "End" (indra/llwindow/llkeyboard.cpp). Japanese
-    /// keyboards print End, as they print Home: 終了 read as "Quit".
+    /// LLKeyboard names KEY_END "End" (indra/llwindow/llkeyboard.cpp).
     #[test]
     fn the_end_key_keeps_its_keyboard_name() {
         assert_eq!(aurora_i18n::text_in("en", "keybinds-end-2"), "End");
-        assert_eq!(aurora_i18n::text_in("ja", "keybinds-end-2"), "End");
-        assert_eq!(aurora_i18n::text_in("fr", "keybinds-end-2"), "Fin");
         assert_eq!(key_label("End"), aurora_i18n::text_in(aurora_i18n::language(), "keybinds-end-2"));
     }
 

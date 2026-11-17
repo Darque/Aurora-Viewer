@@ -2,8 +2,8 @@
 //! Like LLVersionInfo (indra/newview/llversioninfo.cpp), every consumer
 //! reads the same build information. Aurora's release tag is authoritative.
 
-/// Name reported by this customized viewer.
-pub const VIEWER_NAME: &str = "Aurora Viewer Custom";
+/// Name reported by this developer test viewer.
+pub const VIEWER_NAME: &str = "Aurora Viewer Developer";
 
 /// Release tag without `v`, with commit distance/hash metadata between tags.
 pub const fn version() -> &'static str {
@@ -22,7 +22,7 @@ pub const fn commit() -> &'static str {
 
 /// HTTP clients use the same version as the interface.
 pub const fn user_agent() -> &'static str {
-    concat!("AuroraViewerCustom/", env!("AURORA_COMPILED_VERSION"))
+    concat!("AuroraViewerDeveloper/", env!("AURORA_COMPILED_VERSION"))
 }
 
 /// SL's login uses four numeric components, as LLVersionInfo::getVersion:
