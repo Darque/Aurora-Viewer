@@ -40,6 +40,9 @@ pub enum Action {
     Studio,
     /// Clear the camera adjustment for the current framing choices.
     ResetCamera,
+    SaveArrangement,
+    SelectArrangement(usize),
+    DeleteArrangement,
     /// The HD picture's price confirmed: the photo is used, and sent.
     ConfirmHd,
     /// Back to the photo, nothing paid.
@@ -90,7 +93,6 @@ const ANGLES: [Angle; 3] = [Angle::Front, Angle::ThreeQuarter, Angle::Profile];
 const BACKDROPS: [Backdrop; 4] = [Backdrop::Dark, Backdrop::Grey, Backdrop::Light, Backdrop::Scene];
 const LIGHTINGS: [Lighting; 2] = [Lighting::Studio, Lighting::Region];
 const HD_SIDES: [HdSide; 2] = [HdSide::Side512, HdSide::Side1024];
-const LAST_USED_ARRANGEMENT: usize = PortraitSettings::CAMERA_ARRANGEMENTS;
 
 /// The auto portrait's window, or once its photo is over, the previous
 /// outfit's question; `open` is cleared by its X.
@@ -147,9 +149,7 @@ fn body(ui: &mut egui::Ui, p: &Palette, settings: &mut PortraitSettings, view: &
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0;
                     let shot = view.shot.is_some() || view.shooting;
-                    if ui.add_enabled_ui(!shot, |ui| choices_ui(ui, p, settings)).inner {
-                        actions.push(Action::ResetCamera);
-                    }
+                    actions.extend(ui.add_enabled_ui(!shot, |ui| choices_ui(ui, p, settings)).inner);
                     ui.add_space(6.0);
                     // (chosen with the photo shown too: it is drawn at the
                     // largest side)
@@ -165,7 +165,8 @@ fn frame_size(available: Vec2, aspect: f32) -> Vec2 {
     Vec2::new(height * aspect, height)
 }
 
-pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSettings) -> bool {
+pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSettings) -> Vec<Action> {
+    let mut actions = Vec::new();
     choice(
         ui,
         p,
@@ -213,7 +214,7 @@ pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSetting
             aurora_i18n::tr!("ui-appearance-portrait-profile"),
         ],
     );
-    saved_arrangements(ui, s);
+    saved_arrangements(ui, p, s, &mut actions);
     choice(
         ui,
         p,
@@ -245,62 +246,56 @@ pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSetting
         widgets::checkbox(ui, p, &mut s.hide_others, aurora_i18n::tr!("ui-appearance-portrait-hide-others"));
     });
     widgets::checkbox(ui, p, &mut s.keep, aurora_i18n::tr!("ui-appearance-portrait-keep"));
-    reset
+    if reset {
+        actions.push(Action::ResetCamera);
+    }
+    actions
 }
 
-/// Camera views saved for each Framing, Image ratio, Pose and Angle set.
-/// The current portrait settings are the default "Last used" arrangement.
-fn saved_arrangements(ui: &mut egui::Ui, s: &mut PortraitSettings) {
-    ui.add_space(4.0);
+/// Explicitly saved views can be recalled even for the current choices.
+fn saved_arrangements(ui: &mut egui::Ui, p: &Palette, s: &PortraitSettings, actions: &mut Vec<Action>) {
     ui.label(
         RichText::new(aurora_i18n::tr!("ui-appearance-portrait-arrangements"))
             .size(12.0)
             .family(fonts::semibold(ui.ctx()))
             .color(ui.visuals().weak_text_color()),
     );
-    let last_used = s.camera_arrangement_index();
-    let last_used_label = format!("{} · {}", aurora_i18n::tr!("ui-appearance-portrait-last-used"), arrangement_name(s));
-    let mut selected = LAST_USED_ARRANGEMENT;
+    let name = |i: usize| {
+        if i == 0 {
+            aurora_i18n::tr!("ui-appearance-portrait-default").to_string()
+        } else {
+            format!("{} {}", aurora_i18n::tr!("ui-appearance-portrait-default"), i + 1)
+        }
+    };
+    let selected = s
+        .selected_arrangement
+        .filter(|&i| s.arrangements.get(i).is_some_and(Option::is_some));
     egui::ComboBox::from_id_salt("outfit_portrait_saved_arrangements")
-        .selected_text(&last_used_label)
+        .selected_text(
+            selected
+                .map(name)
+                .unwrap_or_else(|| aurora_i18n::tr!("ui-appearance-portrait-no-arrangement").to_string()),
+        )
         .width(ui.available_width())
         .show_ui(ui, |ui| {
-            ui.selectable_value(&mut selected, LAST_USED_ARRANGEMENT, &last_used_label);
-            for arrangement in 0..PortraitSettings::CAMERA_ARRANGEMENTS {
-                if arrangement == last_used || !s.camera_arrangement_is_saved(arrangement) {
-                    continue;
+            for (i, item) in s.arrangements.iter().enumerate() {
+                if item.is_some() && ui.selectable_label(selected == Some(i), name(i)).clicked() {
+                    actions.push(Action::SelectArrangement(i));
                 }
-                let mut candidate = *s;
-                candidate.select_camera_arrangement(arrangement);
-                ui.selectable_value(&mut selected, arrangement, arrangement_name(&candidate));
             }
         });
-    if selected != LAST_USED_ARRANGEMENT {
-        s.select_camera_arrangement(selected);
-    }
-}
-
-fn arrangement_name(s: &PortraitSettings) -> String {
-    let framing = match s.framing {
-        Framing::Body => aurora_i18n::tr!("ui-appearance-portrait-body"),
-        Framing::Bust => aurora_i18n::tr!("ui-appearance-portrait-bust"),
-        Framing::Face => aurora_i18n::tr!("ui-appearance-portrait-face"),
-    };
-    let ratio = match s.ratio {
-        Ratio::Square => aurora_i18n::tr!("ui-appearance-portrait-ratio-square"),
-        Ratio::Portrait => aurora_i18n::tr!("ui-appearance-portrait-ratio-portrait"),
-    };
-    let pose = match s.pose {
-        Pose::A => aurora_i18n::tr!("ui-appearance-portrait-pose-a"),
-        Pose::ArmsDown => aurora_i18n::tr!("ui-appearance-portrait-arms-down"),
-        Pose::Current => aurora_i18n::tr!("ui-appearance-portrait-pose-current"),
-    };
-    let angle = match s.angle {
-        Angle::Front => aurora_i18n::tr!("ui-appearance-portrait-front"),
-        Angle::ThreeQuarter => aurora_i18n::tr!("ui-appearance-portrait-three-quarter"),
-        Angle::Profile => aurora_i18n::tr!("ui-appearance-portrait-profile"),
-    };
-    format!("{framing} · {ratio} · {pose} · {angle}")
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(s.arrangements.iter().any(Option::is_none), |ui| {
+            if widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-save-arrangement")).clicked() {
+                actions.push(Action::SaveArrangement);
+            }
+        });
+        ui.add_enabled_ui(selected.is_some(), |ui| {
+            if widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-delete-arrangement")).clicked() {
+                actions.push(Action::DeleteArrangement);
+            }
+        });
+    });
 }
 
 /// The optional larger picture: upload it for the shown price, save it as a

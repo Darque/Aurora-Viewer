@@ -15063,3 +15063,8 @@ base-outfits-none = No linked base
 base-outfits-still-used = This base is still active or linked to an outfit.
 base-outfits-active = Active bases: { $name }
 base-outfits-clear = Remove active base
+
+ui-appearance-portrait-default = Default
+ui-appearance-portrait-no-arrangement = No saved arrangement
+ui-appearance-portrait-save-arrangement = Save arrangement
+ui-appearance-portrait-delete-arrangement = Delete

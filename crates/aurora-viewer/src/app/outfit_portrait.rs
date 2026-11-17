@@ -288,7 +288,6 @@ impl App {
             s.reframe = None;
             s.preview_at = None;
         }
-        self.capture_outfit_portrait_camera();
     }
 
     fn capture_outfit_portrait_camera(&mut self) {
@@ -301,6 +300,7 @@ impl App {
                 return None;
             }
             s.settings.capture_camera_view(&joints, fov, eye, target);
+            s.settings.camera_roll = self.camera.roll;
             Some(s.settings)
         });
         if let Some(settings) = settings {
@@ -398,11 +398,33 @@ impl App {
         let Some(s) = &mut self.outfit_portrait else {
             return;
         };
+        // Capture the camera after the preceding frame has updated it. This
+        // also follows smoothing until it settles, rather than recording the
+        // old eye position inside the input event.
+        if s.camera_touched
+            && s.reframe.is_none()
+            && let Some(j) = &joints
+        {
+            s.settings.capture_camera_view(j, fov, self.camera.position, self.camera.target);
+            s.settings.camera_roll = self.camera.roll;
+        }
         // a change of the framing's choices: the camera follows again
         let framing = (s.settings.framing, s.settings.ratio, s.settings.angle, s.settings.pose);
         if s.kind == Kind::Studio && s.framed.as_ref().map(|f| (f.framing, f.ratio, f.angle, f.pose)) != Some(framing) {
             s.reframe = Some(Instant::now() + REFRAME);
+            s.camera_touched = false;
+            self.camera.roll = s.settings.camera_roll;
             s.sun_due = true;
+        }
+        // Capture the camera after the preceding frame has updated it. This
+        // also follows smoothing until it settles, rather than recording the
+        // old eye position inside the input event.
+        if s.camera_touched
+            && s.reframe.is_none()
+            && let Some(j) = &joints
+        {
+            s.settings.capture_camera_view(j, fov, self.camera.position, self.camera.target);
+            s.settings.camera_roll = self.camera.roll;
         }
         if s.framed.as_ref() != Some(&s.settings) {
             s.framed = Some(s.settings);
@@ -741,8 +763,42 @@ impl App {
                 s.settings.framing = portrait::Framing::Body;
                 s.settings.angle = portrait::Angle::Front;
             }
+            window::Action::SaveArrangement => {
+                self.capture_outfit_portrait_camera();
+                if let Some(s) = &mut self.outfit_portrait {
+                    if let Some(index) = s.settings.save_arrangement() {
+                        log::info!("outfit portrait: saved arrangement {}", index + 1);
+                        self.settings.outfit_portrait = s.settings;
+                        self.settings.save();
+                    }
+                }
+            }
+            window::Action::SelectArrangement(index) => {
+                if s.settings.select_arrangement(index) {
+                    s.camera_touched = false;
+                    s.reframe = Some(Instant::now() + REFRAME);
+                    s.sun_due = true;
+                    s.preview_at = None;
+                    self.camera.roll = s.settings.camera_roll;
+                    log::info!("outfit portrait: selected arrangement {}", index + 1);
+                    self.settings.outfit_portrait = s.settings;
+                    self.settings.save();
+                }
+            }
+            window::Action::DeleteArrangement => {
+                if let Some(index) = s.settings.selected_arrangement.take() {
+                    if let Some(slot) = s.settings.arrangements.get_mut(index) {
+                        *slot = None;
+                    }
+                    log::info!("outfit portrait: deleted arrangement {}", index + 1);
+                    self.settings.outfit_portrait = s.settings;
+                    self.settings.save();
+                }
+            }
             window::Action::ResetCamera => {
                 s.settings.reset_camera_adjustment();
+                s.settings.camera_roll = 0.0;
+                self.camera.roll = 0.0;
                 s.camera_touched = false;
                 s.reframe = Some(Instant::now() + REFRAME);
                 s.sun_due = true;

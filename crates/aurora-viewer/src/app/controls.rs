@@ -75,6 +75,19 @@ impl App {
         {
             return;
         }
+        if matches!(
+            &action,
+            ControlAction::RollBy(_)
+                | ControlAction::LevelRoll
+                | ControlAction::Zoom(_)
+                | ControlAction::ResetOrbit
+                | ControlAction::ResetCamera
+                | ControlAction::Preset(_)
+                | ControlAction::UseShot(_)
+                | ControlAction::RestoreView(_)
+        ) {
+            self.note_outfit_portrait_camera_adjusted();
+        }
         match action {
             ControlAction::FreeSpeed(speed) => self.snapshots.ui.free.speed = speed,
             ControlAction::FreeCollisions(on) => self.snapshots.ui.free.no_collisions = on,

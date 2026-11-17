@@ -135,6 +135,17 @@ pub enum Lighting {
     Region,
 }
 
+/// An explicitly saved camera view and the choices that determine its frame.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SavedArrangement {
+    pub framing: Framing,
+    pub ratio: Ratio,
+    pub pose: Pose,
+    pub angle: Angle,
+    pub camera: CameraAdjustment,
+    pub roll: f32,
+}
+
 /// The portrait's choices; kept in the settings when "Keep these settings"
 /// is on.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -160,6 +171,9 @@ pub struct PortraitSettings {
     /// Camera offsets for each Framing, Image ratio, Pose and Angle choice.
     /// The 27 slots in each ratio are framed by Framing × Pose × Angle.
     pub camera_presets: [[CameraAdjustment; 27]; 2],
+    pub arrangements: [Option<SavedArrangement>; 8],
+    pub selected_arrangement: Option<usize>,
+    pub camera_roll: f32,
 }
 
 /// The paid HD picture (the user's choice, 2026-11-10): besides the free
@@ -263,18 +277,23 @@ impl Default for PortraitSettings {
             hd_local: false,
             hd_side: HdSide::Side512,
             camera_presets: [[CameraAdjustment::default(); 27]; 2],
+            arrangements: [None; 8],
+            selected_arrangement: None,
+            camera_roll: 0.0,
         }
     }
 }
 
 impl PortraitSettings {
-    pub const CAMERA_ARRANGEMENTS: usize = 54;
-
     /// What the next portrait starts from: the kept choices, else the
     /// defaults (with "keep" left as the user set it).
     pub fn opening(saved: &Self) -> Self {
         if saved.keep {
-            *saved
+            let mut settings = *saved;
+            if let Some(index) = settings.selected_arrangement {
+                settings.select_arrangement(index);
+            }
+            settings
         } else {
             Self {
                 keep: false,
@@ -282,6 +301,7 @@ impl PortraitSettings {
                 hd_local: saved.hd_local,
                 hd_side: saved.hd_side,
                 camera_presets: saved.camera_presets,
+                arrangements: saved.arrangements,
                 ..Self::default()
             }
         }
@@ -310,43 +330,31 @@ impl PortraitSettings {
         (ratio, framing * 9 + pose * 3 + angle)
     }
 
-    pub fn camera_arrangement_index(&self) -> usize {
-        let (ratio, index) = self.camera_preset_index();
-        ratio * 27 + index
+    pub fn save_arrangement(&mut self) -> Option<usize> {
+        let index = self.arrangements.iter().position(Option::is_none)?;
+        self.arrangements[index] = Some(SavedArrangement {
+            framing: self.framing,
+            ratio: self.ratio,
+            pose: self.pose,
+            angle: self.angle,
+            camera: self.camera_adjustment(),
+            roll: self.camera_roll,
+        });
+        self.selected_arrangement = Some(index);
+        Some(index)
     }
 
-    pub fn camera_arrangement_is_saved(&self, arrangement: usize) -> bool {
-        if arrangement >= Self::CAMERA_ARRANGEMENTS {
+    pub fn select_arrangement(&mut self, index: usize) -> bool {
+        let Some(Some(saved)) = self.arrangements.get(index).copied() else {
             return false;
-        }
-        let ratio = arrangement / 27;
-        let index = arrangement % 27;
-        self.camera_presets[ratio][index].is_saved()
-    }
-
-    /// Select one of the saved Framing × Ratio × Pose × Angle camera views.
-    pub fn select_camera_arrangement(&mut self, arrangement: usize) -> bool {
-        if arrangement >= Self::CAMERA_ARRANGEMENTS {
-            return false;
-        }
-        let ratio = arrangement / 27;
-        let choice = arrangement % 27;
-        self.ratio = if ratio == 0 { Ratio::Square } else { Ratio::Portrait };
-        self.framing = match choice / 9 {
-            0 => Framing::Body,
-            1 => Framing::Bust,
-            _ => Framing::Face,
         };
-        self.pose = match (choice / 3) % 3 {
-            0 => Pose::A,
-            1 => Pose::ArmsDown,
-            _ => Pose::Current,
-        };
-        self.angle = match choice % 3 {
-            0 => Angle::Front,
-            1 => Angle::ThreeQuarter,
-            _ => Angle::Profile,
-        };
+        self.framing = saved.framing;
+        self.ratio = saved.ratio;
+        self.pose = saved.pose;
+        self.angle = saved.angle;
+        self.save_camera_adjustment(saved.camera);
+        self.camera_roll = saved.roll;
+        self.selected_arrangement = Some(index);
         true
     }
 
@@ -662,8 +670,7 @@ mod tests {
         let saved_file = serde_json::to_string(&app_settings).unwrap();
         let restored: crate::settings::Settings = serde_json::from_str(&saved_file).unwrap();
         let reopened = PortraitSettings::opening(&restored.outfit_portrait);
-        let arrangement = reopened.camera_arrangement_index();
-        assert!(reopened.camera_arrangement_is_saved(arrangement));
+        assert!(reopened.camera_adjustment().is_saved());
         let (eye_after_reload, target_after_reload) = frame_for_settings(&joints, &reopened, 1.0);
         assert!(eye_after_reload.distance(eye) < 1e-5);
         assert!(target_after_reload.distance(target) < 1e-5);
@@ -682,18 +689,23 @@ mod tests {
         let (eye, target) = frame_for_settings(&joints, &settings, 1.0);
         let view = (eye + Vec3::new(0.2, 0.1, 0.0), target + Vec3::new(-0.1, 0.0, 0.15));
         settings.save_camera_adjustment(CameraAdjustment::from_views(eye, target, view.0, view.1));
-        let saved_index = settings.camera_arrangement_index();
+        settings.camera_roll = 0.2;
+        let saved_index = settings.save_arrangement().unwrap();
+        let encoded = serde_json::to_string(&settings).unwrap();
+        settings = serde_json::from_str(&encoded).unwrap();
 
+        settings.camera_roll = 0.0;
         settings.framing = Framing::Body;
         settings.ratio = Ratio::Square;
         settings.pose = Pose::A;
         settings.angle = Angle::Front;
-        assert!(settings.select_camera_arrangement(saved_index));
+        assert!(settings.select_arrangement(saved_index));
         assert_eq!(settings.framing, Framing::Bust);
         assert_eq!(settings.ratio, Ratio::Portrait);
         assert_eq!(settings.pose, Pose::ArmsDown);
         assert_eq!(settings.angle, Angle::Profile);
-        assert!(settings.camera_arrangement_is_saved(saved_index));
+        assert_eq!(settings.camera_roll, 0.2);
+        assert!(settings.arrangements[saved_index].is_some());
         let (restored_eye, restored_target) = frame_for_settings(&joints, &settings, 1.0);
         assert!(restored_eye.distance(view.0) < 1e-5);
         assert!(restored_target.distance(view.1) < 1e-5);
