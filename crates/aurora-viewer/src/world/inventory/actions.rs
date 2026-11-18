@@ -331,7 +331,10 @@ pub fn renameable(inv: &Inventory, id: Uuid) -> bool {
 /// as do the Trash (moved to by the delete path) and My Outfits
 /// (`outfit_folders::move_into`).
 pub fn destination(inv: &Inventory, id: Uuid) -> bool {
-    inv.folders.contains_key(&id) && mutable(inv, id) && !in_type(inv, id, 14) && !in_type(inv, id, 48)
+    inv.folders.contains_key(&id)
+        && mutable(inv, id)
+        && !in_type(inv, id, 14)
+        && (!in_type(inv, id, 48) || super::super::outfit_folders::variant_parent(inv, id).is_some())
 }
 /// Where a link can be pasted: `destination` plus My Outfits and its
 /// folders, whose contents are links (LLFolderBridge::pasteLinkFromClipboard,
@@ -347,7 +350,9 @@ pub fn link_destination(inv: &Inventory, id: Uuid) -> bool {
 /// folders, or any outfit folder (LLFolderBridge::pasteLinkFromClipboard's
 /// `move_is_into_outfit`).
 fn outfit_destination(inv: &Inventory, id: Uuid) -> bool {
-    in_type(inv, id, 48) || inv.folders.get(&id).is_some_and(|f| f.info.type_default == 47)
+    in_type(inv, id, 48)
+        || inv.folders.get(&id).is_some_and(|f| f.info.type_default == 47)
+        || super::super::outfit_folders::variant_parent(inv, id).is_some()
 }
 /// What a link pasted into an outfit may point at (can_move_to_outfit,
 /// indra/newview/llinventoryfunctions.cpp; LLFolderBridge::dropToOutfit,
@@ -524,6 +529,14 @@ pub fn move_selection(
     protected: &HashSet<Uuid>,
     worn: &HashSet<Uuid>,
 ) -> Result<Mutation, String> {
+    // A variation is an outfit destination. Inventory drags add a link to
+    // its variation, preserving the original inventory item.
+    if super::super::outfit_folders::variant_parent(inv, to).is_some() {
+        return match super::super::outfit_paste::plan(inv, ids, to, false, protected)? {
+            super::super::outfit_paste::Paste::Edit(change) => Ok(change),
+            _ => Err(aurora_i18n::tr!("world-outfit-paste-cannot-be-used-in-outfits").into()),
+        };
+    }
     // LLFolderBridge::dragCategoryIntoFolder permits saved outfits and their
     // groups inside My Outfits, while ordinary item drops remain forbidden.
     if in_type(inv, to, 48) {

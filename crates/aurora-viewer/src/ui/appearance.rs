@@ -876,6 +876,123 @@ fn row_gap(ui: &mut egui::Ui) {
     ui.add_space(1.0 - ui.spacing().item_spacing.y);
 }
 
+/// A variant folder beneath an outfit. Clicking it selects its composition;
+/// inventory items dropped on it become links in that variation.
+fn variant_row(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    world: &World,
+    st: &mut AppearanceUi,
+    outfit: Uuid,
+    variant: Uuid,
+    actions: &mut Vec<Action>,
+) {
+    let Some(folder) = world.inventory.folders.get(&variant) else {
+        return;
+    };
+    let selected = crate::world::outfit_folders::selected_variant(&world.inventory, outfit, &st.variant_selections) == Some(variant);
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), super::inventory::AURORA_ROW_HEIGHT),
+        egui::Sense::click(),
+    );
+    if selected || response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            ui.visuals().window_corner_radius,
+            if selected { p.violet.gamma_multiply(0.2) } else { p.raised },
+        );
+    }
+    let indent = ui.spacing().indent;
+    let icon_at = egui::pos2(rect.left() + indent + 10.0, rect.center().y);
+    if let Some(texture) = icons::global("folder-filled") {
+        ui.painter().image(
+            texture.id(),
+            egui::Rect::from_center_size(icon_at, Vec2::splat(14.0)),
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            p.violet_light,
+        );
+    }
+    let count = ui.painter().layout_no_wrap(
+        aurora_i18n::tr!("workspace-outfit-items", count = folder.items.len()),
+        egui::FontId::proportional(11.0),
+        p.muted,
+    );
+    let count_left = rect.right() - 6.0 - count.size().x;
+    ui.painter()
+        .galley(egui::pos2(count_left, rect.center().y - count.size().y / 2.0), count, p.muted);
+    let text_left = rect.left() + indent + 22.0;
+    let mut job = egui::text::LayoutJob::single_section(
+        folder.info.name.clone(),
+        egui::TextFormat::simple(egui::FontId::proportional(12.0), if selected { p.violet_light } else { p.ink }),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width((count_left - text_left - 6.0).max(1.0));
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        egui::pos2(text_left, rect.center().y - galley.size().y / 2.0),
+        galley,
+        if selected { p.violet_light } else { p.ink },
+    );
+    if response.clicked() {
+        st.variant_selections.insert(outfit, variant);
+        st.outfit_selection.single(outfit);
+        st.clear_items();
+    }
+    variant_drop_target(ui, p, world, st, outfit, variant, &response, actions);
+    row_gap(ui);
+}
+
+fn variant_drop_target(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    world: &World,
+    st: &mut AppearanceUi,
+    outfit: Uuid,
+    variant: Uuid,
+    response: &egui::Response,
+    actions: &mut Vec<Action>,
+) {
+    if !ui.rect_contains_pointer(response.rect) {
+        return;
+    }
+    let Some(ids) = crate::ui::inventory::drag::carried_ids(ui.ctx()) else {
+        return;
+    };
+    let plan = crate::world::outfit_paste::plan(&world.inventory, &ids, variant, false, &HashSet::new());
+    let locks = world.rlva_wear_locks();
+    let unlocked = locks.folder_allows(outfit, true) && locks.folder_allows(variant, true);
+    let allowed = st.pending.is_none()
+        && unlocked
+        && matches!(&plan, Ok(crate::world::outfit_paste::Paste::Edit(change)) if !change.operations.is_empty());
+    crate::ui::inventory::tree::drop_outline(ui, p, response.rect, allowed);
+    crate::ui::inventory::drag::feedback(
+        ui.ctx(),
+        if allowed {
+            egui::CursorIcon::Copy
+        } else {
+            egui::CursorIcon::NotAllowed
+        },
+    );
+    if !ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary)) {
+        return;
+    }
+    egui::DragAndDrop::clear_payload(ui.ctx());
+    if st.pending.is_some() {
+        st.message = aurora_i18n::tr!("ui-inventory-wait-for-the-current-change-to-finish").into();
+    } else if !unlocked {
+        st.message = aurora_i18n::tr!("rlva-blocked").into();
+    } else {
+        match plan {
+            Ok(crate::world::outfit_paste::Paste::Edit(change)) if !change.operations.is_empty() => {
+                st.message.clear();
+                st.variant_selections.insert(outfit, variant);
+                actions.push(Action::Folders(change));
+            }
+            Ok(_) => st.message = aurora_i18n::tr!("world-outfit-paste-cannot-be-used-in-outfits").into(),
+            Err(reason) => st.message = reason,
+        }
+    }
+}
+
 fn row(ui: &mut egui::Ui, p: &Palette, it: &InvItem, desc: &str, selected: bool, worn: Option<&str>) -> egui::Response {
     sensed_row(ui, p, it, desc, selected, worn, egui::Sense::click(), None)
 }
@@ -1446,6 +1563,9 @@ fn outfit_list(
                             })
                             .color(p.muted),
                         );
+                    }
+                    for variant in crate::world::outfit_folders::variants(&world.inventory, *id) {
+                        variant_row(ui, p, world, st, *id, variant, actions);
                     }
                 });
                 ui.spacing_mut().interact_size.y = interact;

@@ -2187,6 +2187,7 @@ ui-inventory-context-add-to-current-outfit = Add to current outfit
 ui-context-add-to-contact-set = Add to contact set
 ui-context-new-contact-set = New contact set…
 ui-appearance-gallery-add-to-your-outfit = Add to your outfit
+ui-appearance-gallery-add-outfit-variant = Add outfit variant
 common-add-2 = Add...
 ui-environment-adjusts-the-sky-for-your-view-only-other-people = Adjusts the sky for your view only; other people do not see these changes.
 build-ui-texture-fit-media-texture-to-face = Fit media texture to face

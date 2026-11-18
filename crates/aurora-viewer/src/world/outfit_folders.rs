@@ -118,6 +118,33 @@ pub fn variant_parent(inv: &Inventory, variant: Uuid) -> Option<Uuid> {
     variants(inv, parent).contains(&variant).then_some(parent)
 }
 
+/// Create a named child folder that acts as one outfit variation. The
+/// generated name is unique among its sibling variants so each new entry is
+/// immediately distinguishable in the selector.
+pub fn create_variant(inv: &Inventory, outfit: Uuid) -> Result<(Uuid, Mutation), String> {
+    if !in_my_outfits(inv, outfit) {
+        return Err(aurora_i18n::tr!("world-outfit-folders-cannot-move-here").into());
+    }
+    let base = crate::text_validation::default_name("photo-knob-variant");
+    let taken: std::collections::HashSet<_> = variants(inv, outfit)
+        .into_iter()
+        .filter_map(|id| inv.folders.get(&id).map(|folder| folder.info.name.to_lowercase()))
+        .collect();
+    let name = if !taken.contains(&base.to_lowercase()) {
+        base.to_owned()
+    } else {
+        (2..)
+            .map(|number| format!("{base} {number}"))
+            .find(|name| !taken.contains(&name.to_lowercase()))
+            .expect("a variant name is available")
+    };
+    let change = actions::create_folder(outfit, &name)?;
+    let Some(Operation::Folder { id, .. }) = change.operations.first() else {
+        return Err(aurora_i18n::tr!("common-folder-not-found").into());
+    };
+    Ok((*id, change))
+}
+
 /// Run a normal outfit wear plan against a temporary inventory view where
 /// each outfit exposes only its remembered variant. Restoring the real child
 /// lists after the operation keeps the inventory tree untouched.
@@ -725,6 +752,62 @@ mod tests {
         });
         assert!(worn_base.contains(&id(9502)));
         assert!(!worn_base.contains(&id(9501)));
+    }
+
+    #[test]
+    fn variants_can_be_created_and_inventory_drops_link_items_into_them() {
+        let mut inv = demo();
+        let outfit = id(704);
+        let (variant, created) = create_variant(&inv, outfit).expect("create a variant");
+        let [
+            Operation::Folder {
+                id: created_id,
+                parent,
+                name,
+                type_default,
+            },
+        ] = created.operations.as_slice()
+        else {
+            panic!("one plain variant folder")
+        };
+        assert_eq!(*created_id, variant);
+        assert_eq!(*parent, outfit);
+        assert_eq!(name, "Variant");
+        assert_eq!(*type_default, FT_NONE);
+
+        let mut folder = inv.folders[&id(743)].clone();
+        folder.info.id = variant;
+        folder.info.parent = outfit;
+        folder.info.name = name.clone();
+        folder.info.type_default = FT_NONE;
+        folder.children.clear();
+        folder.items.clear();
+        inv.folders.insert(variant, folder);
+        inv.folders.get_mut(&outfit).expect("outfit").children.push(variant);
+        assert_eq!(variant_parent(&inv, variant), Some(outfit));
+        assert!(actions::destination(&inv, variant));
+
+        let (next, next_change) = create_variant(&inv, outfit).expect("second variant");
+        assert_ne!(next, variant);
+        assert!(matches!(
+            next_change.operations.as_slice(),
+            [Operation::Folder { name, .. }] if name == "Variant 2"
+        ));
+
+        let item = inv
+            .items
+            .values()
+            .find(|item| matches!(item.asset_type, 5 | 6) && item.asset_type != 24)
+            .expect("wearable item")
+            .id;
+        let change = actions::move_selection(&inv, &[item], variant, &Default::default(), &Default::default())
+            .expect("drop a wearable into the variant");
+        assert!(matches!(
+            change.operations.as_slice(),
+            [Operation::Links { parent, links }]
+                if *parent == variant && links.len() == 1 && links[0].target == item
+        ));
+        assert_ne!(inv.items[&item].parent, variant, "the original inventory item stays put");
     }
 
     fn rows(entries: &[Entry]) -> Vec<(u128, usize, bool, usize)> {

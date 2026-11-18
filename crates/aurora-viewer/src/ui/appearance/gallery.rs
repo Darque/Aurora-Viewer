@@ -242,6 +242,15 @@ fn menu_body(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceU
         if menu::item_if(ui, p, "shirt-filled", aurora_i18n::tr!("base-outfits-wear"), ready && !multiple) {
             actions.push(Action::WearBase(id));
         }
+        if menu::item_if(
+            ui,
+            p,
+            "folder-filled",
+            aurora_i18n::tr!("ui-appearance-gallery-add-outfit-variant"),
+            rules.folder && !multiple,
+        ) {
+            add_variant(inv, st, id, actions);
+        }
     } else {
         if menu::item_if(
             ui,
@@ -260,6 +269,15 @@ fn menu_body(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceU
             enabled(rules.add, |rule| rule.add),
         ) {
             actions.push(st.wear_selection(&outfits, true));
+        }
+        if menu::item_if(
+            ui,
+            p,
+            "folder-filled",
+            aurora_i18n::tr!("ui-appearance-gallery-add-outfit-variant"),
+            rules.folder && !multiple,
+        ) {
+            add_variant(inv, st, id, actions);
         }
         if menu::item_if(
             ui,
@@ -510,6 +528,17 @@ fn menu_body(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceU
             }
         },
     );
+}
+
+fn add_variant(inv: &Inventory, st: &mut AppearanceUi, outfit: Uuid, actions: &mut Vec<Action>) {
+    match crate::world::outfit_folders::create_variant(inv, outfit) {
+        Ok((variant, change)) => {
+            st.variant_selections.insert(outfit, variant);
+            st.message.clear();
+            actions.push(Action::Folders(change));
+        }
+        Err(reason) => st.message = reason,
+    }
 }
 
 pub(super) fn dialogs(ctx: &egui::Context, p: &Palette, world: &mut World, st: &mut AppearanceUi, actions: &mut Vec<Action>) {
@@ -763,6 +792,127 @@ mod tests {
             !world.inventory.folders[&Uuid::from_u128(703)].info.favorite,
             "no optimistic update"
         );
+    }
+
+    #[test]
+    fn gallery_menu_creates_a_plain_child_variant_folder() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::default().apply(&ctx, 1.0);
+        let _icons = crate::ui::icons::Icons::load(&ctx, None);
+        let mut world = World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
+        model::seed_demo(&mut world.inventory, Uuid::from_u128(1));
+        let outfit = Uuid::from_u128(703);
+        let mut st = AppearanceUi::default();
+        st.search = world.inventory.folders[&outfit].info.name.clone();
+        for _ in 0..4 {
+            frame(&ctx, &mut world, &mut st, vec![]);
+        }
+        let label = world.inventory.folders[&outfit].info.name.clone();
+        let shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
+        let tile = shapes
+            .iter()
+            .filter_map(|s| text_position(&s.shape, &label))
+            .max_by(|a, b| a.y.total_cmp(&b.y))
+            .expect("outfit tile")
+            + egui::vec2(10.0, -50.0);
+        assert!(click(&ctx, &mut world, &mut st, tile, PointerButton::Secondary).is_empty());
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            shapes = frame(&ctx, &mut world, &mut st, vec![]).1;
+        }
+        let option = aurora_i18n::tr!("ui-appearance-gallery-add-outfit-variant");
+        let position = shapes
+            .iter()
+            .find_map(|s| text_position(&s.shape, option))
+            .expect("variant menu option");
+        let actions = click(&ctx, &mut world, &mut st, position, PointerButton::Primary);
+        let [Action::Folders(change)] = actions.as_slice() else {
+            panic!("variant creation mutation: {actions:?}");
+        };
+        let [
+            aurora_net::inventory::operations::Operation::Folder {
+                id: variant,
+                parent,
+                name,
+                type_default,
+            },
+        ] = change.operations.as_slice()
+        else {
+            panic!("one plain variant folder");
+        };
+        assert_eq!(*parent, outfit);
+        assert_eq!(name, "Variant");
+        assert_eq!(*type_default, -1);
+        assert_eq!(st.variant_selections.get(&outfit), Some(variant));
+    }
+
+    #[test]
+    fn appearance_variant_row_selects_and_accepts_a_wearable_drop() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::default().apply(&ctx, 1.0);
+        let _icons = crate::ui::icons::Icons::load(&ctx, None);
+        let mut world = World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
+        model::seed_demo(&mut world.inventory, Uuid::from_u128(1));
+        crate::world::outfit_folders::seed_demo(&mut world.inventory, Uuid::from_u128(1));
+        let outfit = Uuid::from_u128(744);
+        let (variant, _) = crate::world::outfit_folders::create_variant(&world.inventory, outfit).expect("variant");
+        let mut folder = world.inventory.folders[&Uuid::from_u128(743)].clone();
+        folder.info.id = variant;
+        folder.info.parent = outfit;
+        folder.info.name = "Variant".into();
+        folder.info.type_default = -1;
+        folder.children.clear();
+        folder.items.clear();
+        world.inventory.folders.insert(variant, folder);
+        world.inventory.folders.get_mut(&outfit).expect("outfit").children.push(variant);
+        let mut st = AppearanceUi::default();
+        let mut actions = Vec::new();
+        let point = egui::pos2(80.0, 18.0);
+        let mut draw = |events: Vec<Event>, time: f64| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(500.0, 200.0))),
+                    events,
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    super::super::variant_row(
+                        ui,
+                        &crate::theme::Theme::default().palette(),
+                        &world,
+                        &mut st,
+                        outfit,
+                        variant,
+                        &mut actions,
+                    );
+                },
+            )
+        };
+        crate::ui::inventory::drag::demo_carry(&ctx, vec![Uuid::from_u128(723)]);
+        for (pressed, time) in [(true, 1.0), (false, 1.1)] {
+            draw(
+                vec![
+                    Event::PointerMoved(point),
+                    Event::PointerButton {
+                        pos: point,
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                time,
+            );
+        }
+        assert_eq!(st.variant_selections.get(&outfit), Some(&variant));
+        let [Action::Folders(change)] = actions.as_slice() else {
+            panic!("drop adds an outfit link: {actions:?}");
+        };
+        assert!(matches!(
+            change.operations.as_slice(),
+            [aurora_net::inventory::operations::Operation::Links { parent, links }]
+                if *parent == variant && links.len() == 1 && links[0].target == Uuid::from_u128(723)
+        ));
     }
 
     #[test]

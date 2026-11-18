@@ -5,7 +5,8 @@
 //! llinventoryfunctions.cpp, originally LGPL 2.1). The inventory and
 //! Appearance share these rules, and the clipboard they apply to.
 //!
-//! - Into an outfit: items become links to their originals; a cut link or
+//! - Into an outfit or one of its variant folders: items become links to
+//!   their originals; a cut link or
 //!   item that sits in another outfit moves instead (the Legacy Viewer links
 //!   it and leaves the first outfit unchanged, so cut and paste could not
 //!   move an item between outfits).
@@ -55,7 +56,7 @@ fn target(inv: &Inventory, to: Uuid) -> Option<Target> {
     if folder.library {
         return None;
     }
-    if folder.info.type_default == FT_OUTFIT {
+    if folder.info.type_default == FT_OUTFIT || outfit_folders::variant_parent(inv, to).is_some() {
         Some(Target::Outfit)
     } else if outfit_folders::container(inv, to) {
         Some(Target::Container)
@@ -93,8 +94,8 @@ fn link_to(inv: &Inventory, id: Uuid) -> Option<OutfitLink> {
 pub fn plan(inv: &Inventory, ids: &[Uuid], to: Uuid, cut: bool, protected: &HashSet<Uuid>) -> Result<Paste, String> {
     let refused = || aurora_i18n::tr!("world-outfit-paste-cannot-be-used-in-outfits").to_string();
     let Some(target) = target(inv, to) else {
-        // A folder inside an outfit, or one My Outfits does not show as a
-        // group (myoutfit_object_subfolder_type): nothing pastes there.
+        // A folder nested inside a variant, or one My Outfits does not show
+        // as a group (myoutfit_object_subfolder_type): nothing pastes there.
         return if actions::in_type(inv, to, FT_MY_OUTFITS) {
             Err(refused())
         } else {
@@ -130,6 +131,7 @@ pub fn plan(inv: &Inventory, ids: &[Uuid], to: Uuid, cut: bool, protected: &Hash
 
 fn outfit_folder(inv: &Inventory, id: Uuid) -> bool {
     inv.folders.get(&id).is_some_and(|f| f.info.type_default == FT_OUTFIT && !f.library)
+        || outfit_folders::variant_parent(inv, id).is_some()
 }
 
 fn into_outfit(inv: &Inventory, ids: &[Uuid], to: Uuid, cut: bool, protected: &HashSet<Uuid>) -> Result<Mutation, String> {
