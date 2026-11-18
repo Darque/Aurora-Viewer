@@ -112,10 +112,11 @@ fn resolve_walk(
         active.insert(id);
         pending.push(Visit::Leave(id));
         let choices = selected_variants.map_or_else(Vec::new, |_| super::outfit_folders::variants(inv, id));
-        let selected = selected_variants
-            .and_then(|remembered| remembered.get(&id).copied())
-            .filter(|variant| choices.contains(variant))
-            .or_else(|| choices.first().copied());
+        let selected = match selected_variants.and_then(|remembered| remembered.get(&id).copied()) {
+            Some(selected) if selected.is_nil() && choices.len() == 1 => None,
+            Some(selected) if choices.contains(&selected) => Some(selected),
+            _ => choices.first().copied(),
+        };
         let mut children = folder.children.clone();
         if !choices.is_empty() {
             children.retain(|child| !choices.contains(child) || Some(*child) == selected);

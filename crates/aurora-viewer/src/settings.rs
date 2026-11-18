@@ -922,7 +922,7 @@ pub struct Settings {
     pub show_appearance: bool,
     /// Crop outfit gallery previews to fill their frames (off: fit the whole image).
     pub appearance_fill_previews: bool,
-    /// The chosen child folder for each outfit that has variants.
+    /// Chosen child folder for each outfit; nil means its main outfit alone.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub appearance_variant_selections: std::collections::HashMap<uuid::Uuid, uuid::Uuid>,
     /// The order of the Favorite Wearables list (FSWearableFavoritesSortOrder).

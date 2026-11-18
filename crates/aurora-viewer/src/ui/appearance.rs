@@ -54,7 +54,8 @@ pub struct AppearanceUi {
     pub(crate) restore_base_after_outfit: Option<Option<Vec<Uuid>>>,
     pub tab: usize,
     pub fill_previews: bool,
-    /// The chosen child folder for each outfit that has variants.
+    /// Chosen child folder for each outfit, or `Uuid::nil()` for its main
+    /// outfit without a variant.
     pub variant_selections: HashMap<Uuid, Uuid>,
     /// The gallery tab as Aurora's showcase (`showcase.rs`) rather than the
     /// Legacy Viewer's tiles: the app sets it from Preferences › Aurora.
@@ -885,12 +886,15 @@ fn variant_row(
     st: &mut AppearanceUi,
     outfit: Uuid,
     variant: Uuid,
+    selected: bool,
+    links: &[aurora_net::outfits::OutfitLink],
+    order: &[Uuid],
+    worn: &HashMap<Uuid, String>,
     actions: &mut Vec<Action>,
 ) {
     let Some(folder) = world.inventory.folders.get(&variant) else {
         return;
     };
-    let selected = crate::world::outfit_folders::selected_variant(&world.inventory, outfit, &st.variant_selections) == Some(variant);
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), super::inventory::AURORA_ROW_HEIGHT),
         egui::Sense::click(),
@@ -902,8 +906,7 @@ fn variant_row(
             if selected { p.violet.gamma_multiply(0.2) } else { p.raised },
         );
     }
-    let indent = ui.spacing().indent;
-    let icon_at = egui::pos2(rect.left() + indent + 10.0, rect.center().y);
+    let icon_at = egui::pos2(rect.left() + 11.0, rect.center().y);
     if let Some(texture) = icons::global("folder-filled") {
         ui.painter().image(
             texture.id(),
@@ -914,13 +917,13 @@ fn variant_row(
     }
     let count = ui.painter().layout_no_wrap(
         aurora_i18n::tr!("workspace-outfit-items", count = folder.items.len()),
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(12.0),
         p.muted,
     );
     let count_left = rect.right() - 6.0 - count.size().x;
     ui.painter()
         .galley(egui::pos2(count_left, rect.center().y - count.size().y / 2.0), count, p.muted);
-    let text_left = rect.left() + indent + 22.0;
+    let text_left = rect.left() + 25.0;
     let mut job = egui::text::LayoutJob::single_section(
         folder.info.name.clone(),
         egui::TextFormat::simple(egui::FontId::proportional(12.0), if selected { p.violet_light } else { p.ink }),
@@ -939,6 +942,37 @@ fn variant_row(
     }
     variant_drop_target(ui, p, world, st, outfit, variant, &response, actions);
     row_gap(ui);
+
+    let indent = ui.spacing().indent;
+    let mut room = ui.available_rect_before_wrap();
+    room.min.x += indent;
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(room).id_salt(("variant_items", outfit, variant)),
+        |ui| {
+            for link in links.iter().filter(|link| !link.folder) {
+                let Some(item) = world.inventory.items.get(&link.target) else {
+                    continue;
+                };
+                ui.push_id(("variant_item", outfit, variant, item.id), |ui| {
+                    let response = row(
+                        ui,
+                        p,
+                        item,
+                        "",
+                        st.item_selected(outfit, item.id) && st.outfit_selection.focus == Some(outfit),
+                        worn.get(&item.id).map(String::as_str),
+                    );
+                    if response.clicked() || response.secondary_clicked() {
+                        st.outfit_selection.single(outfit);
+                        st.variant_selections.insert(outfit, variant);
+                    }
+                    st.select_item(&response, outfit, item.id, order);
+                    items::double_click(&response, world, item, worn.contains_key(&item.id), actions);
+                });
+                row_gap(ui);
+            }
+        },
+    );
 }
 
 fn variant_drop_target(
@@ -1524,7 +1558,24 @@ fn outfit_list(
                         .filter(|l| !l.folder && world.inventory.items.contains_key(&l.target))
                         .map(|l| l.target)
                         .collect();
-                    st.retain_items(*id, &order);
+                    let variants = crate::world::outfit_folders::variants(&world.inventory, *id);
+                    let selected_variant = crate::world::outfit_folders::selected_variant(&world.inventory, *id, &st.variant_selections);
+                    let mut variant_contents = Vec::with_capacity(variants.len());
+                    let mut all_order = order.clone();
+                    for variant in variants {
+                        let mut variant_links = model::folder_links(&world.inventory, variant);
+                        items::sort_links(&world.inventory, &mut variant_links);
+                        all_order.extend(
+                            variant_links
+                                .iter()
+                                .filter(|link| !link.folder && world.inventory.items.contains_key(&link.target))
+                                .map(|link| link.target),
+                        );
+                        variant_contents.push((variant, variant_links));
+                    }
+                    let mut seen = HashSet::new();
+                    all_order.retain(|id| seen.insert(*id));
+                    st.retain_items(*id, &all_order);
                     for link in links.iter().filter(|l| !l.folder) {
                         if let Some(it) = world.inventory.items.get(&link.target) {
                             ui.push_id(("outfit_item", id, it.id), |ui| {
@@ -1544,9 +1595,9 @@ fn outfit_list(
                                 if response.clicked() || response.secondary_clicked() {
                                     st.outfit_selection.single(*id);
                                 }
-                                st.select_item(&response, *id, it.id, &order);
+                                st.select_item(&response, *id, it.id, &all_order);
                                 items::double_click(&response, world, it, worn.contains_key(&it.id), actions);
-                                let selected = st.selected_items(*id, it.id, &order);
+                                let selected = st.selected_items(*id, it.id, &all_order);
                                 items::context_menu(&response, p, world, st, items::List::Outfit(*id), it, &selected, actions);
                             });
                             row_gap(ui);
@@ -1564,8 +1615,20 @@ fn outfit_list(
                             .color(p.muted),
                         );
                     }
-                    for variant in crate::world::outfit_folders::variants(&world.inventory, *id) {
-                        variant_row(ui, p, world, st, *id, variant, actions);
+                    for (variant, variant_links) in &variant_contents {
+                        variant_row(
+                            ui,
+                            p,
+                            world,
+                            st,
+                            *id,
+                            *variant,
+                            selected_variant == Some(*variant),
+                            variant_links,
+                            &all_order,
+                            &worn,
+                            actions,
+                        );
                     }
                 });
                 ui.spacing_mut().interact_size.y = interact;
@@ -1671,9 +1734,8 @@ fn outfit_list_with_preview(
         .focus
         .filter(|id| outfits.contains(id))
         .or(current.filter(|id| outfits.contains(&id)));
-    egui::ScrollArea::vertical()
+    showcase::preview_scroll_area()
         .id_salt("appearance_outfit_preview_scroll")
-        .auto_shrink([false, false])
         .show(&mut preview_ui, |ui| match picked {
             Some(id) => showcase::preview_panel(ui, p, world, st, id, actions, images),
             None => {
@@ -2786,14 +2848,14 @@ mod tests {
     /// window is left on the worn tab, with no list of items to add.
     #[test]
     fn rlva_showinv_leaves_the_outfit_tabs_for_the_worn_one() {
-        for tab in 0..=2 {
+        for tab in TAB_GALLERY..=TAB_OUTFITS {
             let mut st = AppearanceUi {
                 tab,
                 adding: true,
                 ..Default::default()
             };
             st.hide_inventory();
-            assert_eq!((st.tab, st.adding), (2, false));
+            assert_eq!((st.tab, st.adding), (TAB_WORN, false));
         }
     }
 
@@ -5296,7 +5358,7 @@ mod tests {
                     // (rlvhandler.cpp): the outfits tab is left for the worn
                     // one, and the outfit's rows go with it
                     if !enabled {
-                        assert_eq!(st.tab, 2, "@showinv leaves the outfits tab");
+                        assert_eq!(st.tab, TAB_WORN, "@showinv leaves the window on the worn tab");
                         continue;
                     }
                     // the release leaves the window on the worn tab

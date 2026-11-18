@@ -529,10 +529,15 @@ pub fn move_selection(
     protected: &HashSet<Uuid>,
     worn: &HashSet<Uuid>,
 ) -> Result<Mutation, String> {
-    // A variation is an outfit destination. Inventory drags add a link to
-    // its variation, preserving the original inventory item.
-    if super::super::outfit_folders::variant_parent(inv, to).is_some() {
-        return match super::super::outfit_paste::plan(inv, ids, to, false, protected)? {
+    // Drops into an outfit or variation add ordinary inventory items as
+    // links, while moving an existing outfit link relocates that link.
+    let outfit_destination = inv
+        .folders
+        .get(&to)
+        .is_some_and(|folder| !folder.library && folder.info.type_default == super::super::appearance::FT_OUTFIT)
+        || super::super::outfit_folders::variant_parent(inv, to).is_some();
+    if outfit_destination {
+        return match super::super::outfit_paste::plan(inv, ids, to, true, protected)? {
             super::super::outfit_paste::Paste::Edit(change) => Ok(change),
             _ => Err(aurora_i18n::tr!("world-outfit-paste-cannot-be-used-in-outfits").into()),
         };

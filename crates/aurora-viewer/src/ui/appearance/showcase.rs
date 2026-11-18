@@ -176,6 +176,15 @@ pub(super) fn previews(width: f32) -> bool {
     width >= PREVIEW_FROM
 }
 
+/// The portrait's height follows its available width, so the preview always
+/// reserves its scrollbar slot instead of making the image alternate between
+/// fitting and overflowing by a few pixels.
+pub(super) fn preview_scroll_area() -> egui::ScrollArea {
+    egui::ScrollArea::vertical()
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+        .auto_shrink([false, false])
+}
+
 /// Widens the window, once, to the showcase's rail, three columns and
 /// preview when it first shows in a narrower window. The window is the
 /// user's to make narrower again: the showcase then folds its rail into a
@@ -327,9 +336,8 @@ pub(super) fn show(
             .focus
             .filter(|id| shown.contains(id))
             .or(current.filter(|id| shown.contains(id)));
-        egui::ScrollArea::vertical()
+        preview_scroll_area()
             .id_salt("appearance_showcase_preview")
-            .auto_shrink([false, false])
             .show(&mut v, |ui| match picked {
                 Some(id) => preview_panel(ui, p, world, st, id, actions, images),
                 None => {
@@ -895,7 +903,7 @@ pub(super) fn preview_panel(
     }
     if !variants.is_empty() {
         ui.add_space(4.0);
-        variant_selector(ui, p, st, inv, id, &variants, picture_folder);
+        let _ = variant_selector(ui, p, st, inv, id, &variants, selected_variant);
     }
     ui.add_space(10.0);
     let parent = folder.info.parent;
@@ -1030,23 +1038,28 @@ fn variant_selector(
     inv: &crate::world::inventory::Inventory,
     outfit: Uuid,
     variants: &[Uuid],
-    selected: Uuid,
-) {
-    let Some(index) = variants.iter().position(|variant| *variant == selected) else {
-        return;
-    };
-    let (previous, next) = ui
+    selected: Option<Uuid>,
+) -> (Rect, Rect) {
+    let has_main_outfit = variants.len() == 1;
+    let index = selected
+        .and_then(|selected| variants.iter().position(|variant| *variant == selected))
+        .map_or(0, |index| index + usize::from(has_main_outfit));
+    let choice_count = variants.len() + usize::from(has_main_outfit);
+    let (previous, next, previous_rect, next_rect) = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            let enabled = variants.len() > 1;
             let previous = ui
-                .add_enabled_ui(enabled, |ui| {
+                .add_enabled_ui(choice_count > 1, |ui| {
                     widgets::glass_action_icon(ui, p, "arrow-left", aurora_i18n::tr!("common-previous"), Vec2::splat(28.0), p.ink)
                 })
                 .inner
-                .on_hover_text(aurora_i18n::tr!("common-previous"))
-                .clicked();
-            let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
+                .on_hover_text(aurora_i18n::tr!("common-previous"));
+            let previous_clicked = previous.clicked();
+            // Leave room for the following arrow too: available_width only
+            // measures the space after the previous button and otherwise
+            // consumes the right arrow's entire slot.
+            let field_width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(0.0);
+            let (field, _) = ui.allocate_exact_size(Vec2::new(field_width, 28.0), Sense::hover());
             ui.painter().rect_filled(field, ui.visuals().window_corner_radius, p.field);
             ui.painter().rect_stroke(
                 field,
@@ -1054,32 +1067,44 @@ fn variant_selector(
                 egui::Stroke::new(1.0, p.raised),
                 egui::StrokeKind::Inside,
             );
-            let name = inv
-                .folders
-                .get(&selected)
-                .map_or_else(String::new, |folder| folder.info.name.clone());
+            let name = if has_main_outfit && index == 0 {
+                aurora_i18n::tr!("ui-appearance-showcase-main-outfit").to_string()
+            } else {
+                inv.folders
+                    .get(&variants[index - usize::from(has_main_outfit)])
+                    .map_or_else(String::new, |folder| folder.info.name.clone())
+            };
             let mut job = egui::text::LayoutJob::single_section(name, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.ink));
             job.wrap = egui::text::TextWrapping::truncate_at_width((field.width() - 12.0).max(1.0));
             let text = ui.painter().layout_job(job);
             ui.painter().galley(field.center() - text.size() / 2.0, text, p.ink);
             let next = ui
-                .add_enabled_ui(enabled, |ui| {
+                .add_enabled_ui(choice_count > 1, |ui| {
                     widgets::glass_action_icon(ui, p, "arrow-right", aurora_i18n::tr!("common-next"), Vec2::splat(28.0), p.ink)
                 })
                 .inner
-                .on_hover_text(aurora_i18n::tr!("common-next"))
-                .clicked();
-            (previous, next)
+                .on_hover_text(aurora_i18n::tr!("common-next"));
+            let next_clicked = next.clicked();
+            (previous_clicked, next_clicked, previous.rect, next.rect)
         })
         .inner;
     if previous || next {
         let next_index = if previous {
-            (index + variants.len() - 1) % variants.len()
+            (index + choice_count - 1) % choice_count
         } else {
-            (index + 1) % variants.len()
+            (index + 1) % choice_count
         };
-        st.variant_selections.insert(outfit, variants[next_index]);
+        let variant_index = next_index.saturating_sub(usize::from(has_main_outfit));
+        st.variant_selections.insert(
+            outfit,
+            if has_main_outfit && next_index == 0 {
+                Uuid::nil()
+            } else {
+                variants[variant_index]
+            },
+        );
     }
+    (previous_rect, next_rect)
 }
 
 /// The items of the outfit `id` and the selected variant subtree, by
@@ -1229,6 +1254,32 @@ mod tests {
         (world, st)
     }
 
+    fn selector_frame(
+        ctx: &egui::Context,
+        palette: &Palette,
+        world: &World,
+        st: &mut AppearanceUi,
+        outfit: Uuid,
+        variants: &[Uuid],
+        events: Vec<egui::Event>,
+        time: f64,
+    ) -> (Rect, Rect) {
+        let selected = crate::world::outfit_folders::selected_variant(&world.inventory, outfit, &st.variant_selections);
+        let mut arrows = (Rect::NOTHING, Rect::NOTHING);
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(300.0, 40.0))),
+                events,
+                time: Some(time),
+                ..Default::default()
+            },
+            |ui| {
+                arrows = variant_selector(ui, palette, st, &world.inventory, outfit, variants, selected);
+            },
+        );
+        arrows
+    }
+
     fn collection(world: &World, st: &mut AppearanceUi, filter: Filter) -> (Vec<Uuid>, usize, usize) {
         st.showcase_state.filter = filter;
         let shown = st.shown_outfits(&world.inventory);
@@ -1307,6 +1358,150 @@ mod tests {
             state.outfits(&mut pictured, &world, &shown, &[(outfit, Some(second))]).no_picture,
             0
         );
+    }
+
+    #[test]
+    fn variant_selector_arrows_cycle_between_one_accessory_and_main_outfit() {
+        let (mut world, _) = grouped();
+        let outfit = Uuid::from_u128(744);
+        let (variant, _) = crate::world::outfit_folders::create_variant(&world.inventory, outfit).expect("variant");
+        let mut folder = world.inventory.folders[&Uuid::from_u128(743)].clone();
+        folder.info.id = variant;
+        folder.info.parent = outfit;
+        folder.info.name = "Accessory".into();
+        folder.children.clear();
+        folder.items.clear();
+        world.inventory.folders.insert(variant, folder);
+        world.inventory.folders.get_mut(&outfit).expect("outfit").children.push(variant);
+
+        let ctx = egui::Context::default();
+        crate::theme::Theme::default().apply(&ctx, 1.0);
+        let mut st = AppearanceUi::default();
+        let palette = crate::theme::Theme::default().palette();
+        let (_, right_rect) = selector_frame(&ctx, &palette, &world, &mut st, outfit, &[variant], Vec::new(), 0.9);
+        assert!(
+            right_rect.right() <= 300.0 && right_rect.width() >= 27.0,
+            "right arrow geometry is clipped: {right_rect:?}"
+        );
+        let right_arrow = right_rect.center();
+        for (pressed, time) in [(true, 1.0), (false, 1.1)] {
+            selector_frame(
+                &ctx,
+                &palette,
+                &world,
+                &mut st,
+                outfit,
+                &[variant],
+                vec![
+                    egui::Event::PointerMoved(right_arrow),
+                    egui::Event::PointerButton {
+                        pos: right_arrow,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                time,
+            );
+        }
+        assert_eq!(
+            crate::world::outfit_folders::selected_variant(&world.inventory, outfit, &st.variant_selections),
+            None,
+            "the right arrow at the edge selects Main outfit"
+        );
+
+        let (left_rect, _) = selector_frame(&ctx, &palette, &world, &mut st, outfit, &[variant], Vec::new(), 1.9);
+        let left_arrow = left_rect.center();
+        for (pressed, time) in [(true, 2.0), (false, 2.1)] {
+            selector_frame(
+                &ctx,
+                &palette,
+                &world,
+                &mut st,
+                outfit,
+                &[variant],
+                vec![
+                    egui::Event::PointerMoved(left_arrow),
+                    egui::Event::PointerButton {
+                        pos: left_arrow,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                time,
+            );
+        }
+        assert_eq!(
+            crate::world::outfit_folders::selected_variant(&world.inventory, outfit, &st.variant_selections),
+            Some(variant),
+            "the left arrow returns to the single accessory"
+        );
+
+        let (second, _) = crate::world::outfit_folders::create_variant(&world.inventory, outfit).expect("second variant");
+        let mut folder = world.inventory.folders[&Uuid::from_u128(743)].clone();
+        folder.info.id = second;
+        folder.info.parent = outfit;
+        folder.info.name = "Second".into();
+        folder.children.clear();
+        folder.items.clear();
+        world.inventory.folders.insert(second, folder);
+        world.inventory.folders.get_mut(&outfit).expect("outfit").children.push(second);
+        let options = crate::world::outfit_folders::variants(&world.inventory, outfit);
+        let (_, right_rect) = selector_frame(&ctx, &palette, &world, &mut st, outfit, &options, Vec::new(), 2.9);
+        let right_arrow = right_rect.center();
+        for (pressed, time) in [(true, 3.0), (false, 3.1)] {
+            selector_frame(
+                &ctx,
+                &palette,
+                &world,
+                &mut st,
+                outfit,
+                &options,
+                vec![
+                    egui::Event::PointerMoved(right_arrow),
+                    egui::Event::PointerButton {
+                        pos: right_arrow,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                time,
+            );
+        }
+        assert_eq!(
+            crate::world::outfit_folders::selected_variant(&world.inventory, outfit, &st.variant_selections),
+            Some(options[1]),
+            "multiple variants cycle directly without a Main outfit option"
+        );
+    }
+
+    #[test]
+    fn preview_scrollbar_reserves_the_same_width_when_content_overflows() {
+        let ctx = egui::Context::default();
+        let mut widths = Vec::new();
+        for (height, time) in [(70.0, 1.0), (300.0, 1.1)] {
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(360.0, 180.0))),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    let rect = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(320.0, 120.0));
+                    let mut preview = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                    let output = preview_scroll_area()
+                        .id_salt("preview_scrollbar_regression")
+                        .show(&mut preview, |ui| {
+                            ui.add_space(height);
+                        });
+                    widths.push(output.inner_rect.width());
+                },
+            );
+        }
+        assert_eq!(widths.len(), 2);
+        assert!((widths[0] - widths[1]).abs() < 0.1, "scrollbar changed preview width: {widths:?}");
     }
 
     #[test]

@@ -73,8 +73,9 @@ pub fn is_group(inv: &Inventory, id: Uuid) -> bool {
 }
 
 /// The plain child folders that represent outfit variants. The outfit
-/// folder itself remains the outfit; its direct items are shared by every
-/// variant, and one child folder supplies the selected variation.
+/// folder's direct items are always shared; a selected child adds its items,
+/// while the single child folder also offers a main-outfit choice without
+/// its optional accessory.
 pub fn variants(inv: &Inventory, outfit: Uuid) -> Vec<Uuid> {
     let Some(folder) = inv.folders.get(&outfit).filter(|folder| outfit_folder(inv, folder.info.id)) else {
         return Vec::new();
@@ -101,14 +102,16 @@ pub fn variants(inv: &Inventory, outfit: Uuid) -> Vec<Uuid> {
 }
 
 /// The remembered variant when it still belongs to `outfit`, otherwise the
-/// first available variant. Inventory order does not affect this choice.
+/// first available variant. A remembered nil UUID selects the outfit's
+/// direct items without the optional accessory when there is exactly one
+/// child. Inventory order does not affect this choice.
 pub fn selected_variant(inv: &Inventory, outfit: Uuid, remembered: &HashMap<Uuid, Uuid>) -> Option<Uuid> {
-    let variants = variants(inv, outfit);
-    remembered
-        .get(&outfit)
-        .copied()
-        .filter(|selected| variants.contains(selected))
-        .or_else(|| variants.first().copied())
+    let choices = variants(inv, outfit);
+    match remembered.get(&outfit).copied() {
+        Some(selected) if selected.is_nil() && choices.len() == 1 => None,
+        Some(selected) if choices.contains(&selected) => Some(selected),
+        _ => choices.first().copied(),
+    }
 }
 
 /// The outfit folder that owns `variant`, when it is one of that outfit's
@@ -161,23 +164,19 @@ pub fn with_selected_variants<R>(inv: &mut Inventory, remembered: &HashMap<Uuid,
         if choices.is_empty() {
             continue;
         }
-        let selected = remembered
-            .get(&parent)
-            .copied()
-            .filter(|variant| choices.contains(variant))
-            .unwrap_or(choices[0]);
+        let selected = selected_variant(inv, parent, remembered);
         let hidden_links: std::collections::HashSet<_> = inv
             .folders
             .get(&parent)
             .into_iter()
             .flat_map(|folder| folder.items.iter())
             .filter_map(|item_id| inv.items.get(item_id))
-            .filter(|item| item.asset_type == 25 && choices.contains(&item.asset_id) && item.asset_id != selected)
+            .filter(|item| item.asset_type == 25 && choices.contains(&item.asset_id) && Some(item.asset_id) != selected)
             .map(|item| item.id)
             .collect();
         if let Some(folder) = inv.folders.get_mut(&parent) {
             saved.push((parent, folder.children.clone(), folder.items.clone()));
-            folder.children.retain(|child| !choices.contains(child) || *child == selected);
+            folder.children.retain(|child| !choices.contains(child) || Some(*child) == selected);
             folder.items.retain(|item_id| !hidden_links.contains(item_id));
         }
     }
@@ -695,6 +694,7 @@ mod tests {
         wearable.parent = variant;
         wearable.name = format!("{name} wearable");
         wearable.inv_type = 18;
+        wearable.flags = (item.as_u128() & 0xff) as u32;
         inv.add_items(vec![wearable]);
         inv.folders.get_mut(&variant).expect("variant").items.push(item);
     }
@@ -721,17 +721,47 @@ mod tests {
                 .map(|link| link.target)
                 .collect::<std::collections::HashSet<_>>()
         });
-        assert!(worn.contains(&id(9201)));
+        assert!(worn.contains(&id(9201)), "worn set: {worn:?}");
         assert!(!worn.contains(&id(9202)));
         assert_eq!(inv.folders[&outfit].children, child_ids, "temporary view restores inventory");
 
         remembered.insert(outfit, id(9202));
         assert_eq!(selected_variant(&inv, outfit, &remembered), Some(id(9002)));
 
+        remembered.insert(outfit, Uuid::nil());
+        assert_eq!(
+            selected_variant(&inv, outfit, &remembered),
+            Some(id(9002)),
+            "multiple variants keep the first variant selected"
+        );
+        inv.folders
+            .get_mut(&outfit)
+            .expect("outfit")
+            .children
+            .retain(|child| *child != id(9002));
+        inv.folders.get_mut(&outfit).expect("outfit").items.retain(|item| *item != id(9102));
+        assert_eq!(
+            selected_variant(&inv, outfit, &remembered),
+            None,
+            "a single child folder allows the main outfit to be selected"
+        );
+        let main_only = with_selected_variants(&mut inv, &remembered, |view| {
+            assert!(view.folders[&outfit].children.is_empty());
+            super::super::appearance::plan(view, super::super::appearance::Action::Wear(outfit, false), &HashMap::new())
+                .expect("wear the main outfit alone")
+                .0
+                .links
+                .into_iter()
+                .filter(|link| !link.folder)
+                .map(|link| link.target)
+                .collect::<std::collections::HashSet<_>>()
+        });
+        assert!(!main_only.contains(&id(9201)) && !main_only.contains(&id(9202)));
+
         let base = id(703);
         add_variant(&mut inv, base, id(9301), id(9401), id(9501), "Base A");
         add_variant(&mut inv, base, id(9302), id(9402), id(9502), "Base B");
-        let selected = HashMap::from([(base, id(9302))]);
+        let mut selected = HashMap::from([(base, id(9302))]);
         let base_items: std::collections::HashSet<_> = super::super::base_outfits::resolve_for_wear_selected(&inv, base, &selected)
             .expect("base outfit resolves")
             .links
@@ -752,6 +782,17 @@ mod tests {
         });
         assert!(worn_base.contains(&id(9502)));
         assert!(!worn_base.contains(&id(9501)));
+
+        selected.insert(base, Uuid::nil());
+        let base_default_variant: std::collections::HashSet<_> =
+            super::super::base_outfits::resolve_for_wear_selected(&inv, base, &selected)
+                .expect("base outfit resolves with a selected variant")
+                .links
+                .into_iter()
+                .filter(|link| !link.folder)
+                .map(|link| link.target)
+                .collect();
+        assert!(base_default_variant.contains(&id(9501)) && !base_default_variant.contains(&id(9502)));
     }
 
     #[test]
@@ -808,6 +849,25 @@ mod tests {
                 if *parent == variant && links.len() == 1 && links[0].target == item
         ));
         assert_ne!(inv.items[&item].parent, variant, "the original inventory item stays put");
+
+        let outfit_link = id(9600);
+        let original = inv.items[&item].clone();
+        inv.add_items(vec![aurora_net::inventory::InvItem {
+            id: outfit_link,
+            parent: outfit,
+            asset_id: item,
+            asset_type: 24,
+            inv_type: original.inv_type,
+            name: original.name,
+            ..Default::default()
+        }]);
+        inv.folders.get_mut(&outfit).expect("outfit").items.push(outfit_link);
+        let moved = actions::move_selection(&inv, &[outfit_link], variant, &Default::default(), &Default::default())
+            .expect("move an outfit link into the selected variant");
+        assert!(matches!(
+            moved.operations.as_slice(),
+            [Operation::Patch { id, folder: false, body }] if *id == outfit_link && body["parent_id"].as_uuid() == variant
+        ));
     }
 
     fn rows(entries: &[Entry]) -> Vec<(u128, usize, bool, usize)> {

@@ -289,7 +289,7 @@ fn saved_arrangements(ui: &mut egui::Ui, p: &Palette, s: &PortraitSettings, acti
                 egui::TextEdit::singleline(&mut name)
                     .id(id)
                     .char_limit(32)
-                    .align(egui::Align2::CENTER_CENTER),
+                    .align(egui::Align2::LEFT_CENTER),
             );
             if response.lost_focus() {
                 if name.trim() != stored {
@@ -307,7 +307,7 @@ fn saved_arrangements(ui: &mut egui::Ui, p: &Palette, s: &PortraitSettings, acti
                 ui.add_sized(
                     Vec2::new(field_width, 28.0),
                     egui::TextEdit::singleline(&mut aurora_i18n::tr!("ui-appearance-portrait-no-arrangement").to_string())
-                        .align(egui::Align2::CENTER_CENTER),
+                        .align(egui::Align2::LEFT_CENTER),
                 );
             });
         }

@@ -867,6 +867,9 @@ mod tests {
         world.inventory.folders.get_mut(&outfit).expect("outfit").children.push(variant);
         let mut st = AppearanceUi::default();
         let mut actions = Vec::new();
+        let order = vec![Uuid::from_u128(723)];
+        let links = model::folder_links(&world.inventory, variant);
+        let worn = super::super::items::worn_labels(&world);
         let point = egui::pos2(80.0, 18.0);
         let mut draw = |events: Vec<Event>, time: f64| {
             ctx.run_ui(
@@ -884,6 +887,10 @@ mod tests {
                         &mut st,
                         outfit,
                         variant,
+                        true,
+                        &links,
+                        &order,
+                        &worn,
                         &mut actions,
                     );
                 },
