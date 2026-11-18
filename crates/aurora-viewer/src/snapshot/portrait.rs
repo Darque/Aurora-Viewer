@@ -144,6 +144,8 @@ pub struct SavedArrangement {
     pub angle: Angle,
     pub camera: CameraAdjustment,
     pub roll: f32,
+    #[serde(default)]
+    pub name: [u8; 32],
 }
 
 /// The portrait's choices; kept in the settings when "Keep these settings"
@@ -289,11 +291,7 @@ impl PortraitSettings {
     /// defaults (with "keep" left as the user set it).
     pub fn opening(saved: &Self) -> Self {
         if saved.keep {
-            let mut settings = *saved;
-            if let Some(index) = settings.selected_arrangement {
-                settings.select_arrangement(index);
-            }
-            settings
+            *saved
         } else {
             Self {
                 keep: false,
@@ -339,9 +337,70 @@ impl PortraitSettings {
             angle: self.angle,
             camera: self.camera_adjustment(),
             roll: self.camera_roll,
+            name: [0; 32],
         });
+        self.rename_arrangement(index, "Default");
         self.selected_arrangement = Some(index);
         Some(index)
+    }
+
+    /// Names are stored inline so older portrait settings remain compatible.
+    pub fn arrangement_name(&self, index: usize) -> Option<String> {
+        let saved = self.arrangements.get(index)?.as_ref()?;
+        let end = saved.name.iter().position(|b| *b == 0).unwrap_or(saved.name.len());
+        let name = std::str::from_utf8(&saved.name[..end]).unwrap_or("");
+        Some(if name.is_empty() {
+            if index == 0 {
+                "Default".into()
+            } else {
+                format!("Default {}", index + 1)
+            }
+        } else {
+            name.to_owned()
+        })
+    }
+
+    pub fn rename_arrangement(&mut self, index: usize, name: &str) {
+        if self.arrangements.get(index).is_none_or(Option::is_none) {
+            return;
+        }
+        let name = name.trim();
+        let base = if name.is_empty() { "Default" } else { name };
+        let mut n = 1usize;
+        let chosen = loop {
+            let suffix = if n == 1 { String::new() } else { format!(" {n}") };
+            let limit = 32 - suffix.len().min(32);
+            let mut end = base.len().min(limit);
+            while !base.is_char_boundary(end) {
+                end -= 1;
+            }
+            let candidate = format!("{}{}", &base[..end], suffix);
+            if !(0..self.arrangements.len())
+                .any(|i| i != index && self.arrangement_name(i).is_some_and(|other| other.eq_ignore_ascii_case(&candidate)))
+            {
+                break candidate;
+            }
+            n += 1;
+        };
+        if let Some(saved) = &mut self.arrangements[index] {
+            saved.name = [0; 32];
+            saved.name[..chosen.len()].copy_from_slice(chosen.as_bytes());
+        }
+    }
+
+    pub fn update_selected_arrangement(&mut self) {
+        let Some(index) = self.selected_arrangement else {
+            return;
+        };
+        let camera = self.camera_adjustment();
+        if let Some(Some(saved)) = self.arrangements.get_mut(index) {
+            saved.framing = self.framing;
+            saved.ratio = self.ratio;
+            saved.pose = self.pose;
+            saved.angle = self.angle;
+            saved.camera = camera;
+            saved.roll = self.camera_roll;
+        }
     }
 
     pub fn select_arrangement(&mut self, index: usize) -> bool {
@@ -674,6 +733,28 @@ mod tests {
         let (eye_after_reload, target_after_reload) = frame_for_settings(&joints, &reopened, 1.0);
         assert!(eye_after_reload.distance(eye) < 1e-5);
         assert!(target_after_reload.distance(target) < 1e-5);
+    }
+
+    #[test]
+    fn edited_arrangements_are_named_uniquely_and_reopen_with_latest_view() {
+        let mut settings = PortraitSettings::default();
+        let first = settings.save_arrangement().unwrap();
+        let second = settings.save_arrangement().unwrap();
+        assert_eq!(settings.arrangement_name(first).as_deref(), Some("Default"));
+        assert_eq!(settings.arrangement_name(second).as_deref(), Some("Default 2"));
+        settings.rename_arrangement(first, "Headshot");
+        settings.rename_arrangement(second, "Headshot");
+        assert_eq!(settings.arrangement_name(second).as_deref(), Some("Headshot 2"));
+        settings.framing = Framing::Face;
+        settings.camera_roll = 0.35;
+        settings.update_selected_arrangement();
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let saved: PortraitSettings = serde_json::from_str(&encoded).unwrap();
+        let reopened = PortraitSettings::opening(&saved);
+        assert_eq!(reopened.framing, Framing::Face);
+        assert_eq!(reopened.camera_roll, 0.35);
+        assert_eq!(reopened.arrangement_name(second).as_deref(), Some("Headshot 2"));
+        assert_eq!(reopened.arrangements[second].unwrap().framing, Framing::Face);
     }
 
     #[test]

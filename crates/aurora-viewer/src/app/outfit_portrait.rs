@@ -231,7 +231,7 @@ impl App {
     /// the window stays for the previous outfit's question when the outfit
     /// was worn from it.
     fn end_outfit_portrait_photo(&mut self) {
-        let capture_camera = self.outfit_portrait.as_ref().is_some_and(|s| s.camera_touched && !s.over);
+        let capture_camera = self.outfit_portrait.as_ref().is_some_and(|s| !s.over && s.kind == Kind::Studio);
         if capture_camera {
             self.capture_outfit_portrait_camera();
         }
@@ -257,7 +257,10 @@ impl App {
         if s.kind == Kind::Viewfinder && !s.was_open {
             self.panels.snapshot = false;
         }
-        // the choices kept for the next portrait
+        // Persist edits to the selected view as well as the current choices.
+        if s.settings.keep {
+            s.settings.update_selected_arrangement();
+        }
         if self.settings.outfit_portrait != s.settings {
             self.settings.outfit_portrait = s.settings;
             self.settings.save();
@@ -398,16 +401,6 @@ impl App {
         let Some(s) = &mut self.outfit_portrait else {
             return;
         };
-        // Capture the camera after the preceding frame has updated it. This
-        // also follows smoothing until it settles, rather than recording the
-        // old eye position inside the input event.
-        if s.camera_touched
-            && s.reframe.is_none()
-            && let Some(j) = &joints
-        {
-            s.settings.capture_camera_view(j, fov, self.camera.position, self.camera.target);
-            s.settings.camera_roll = self.camera.roll;
-        }
         // a change of the framing's choices: the camera follows again
         let framing = (s.settings.framing, s.settings.ratio, s.settings.angle, s.settings.pose);
         if s.kind == Kind::Studio && s.framed.as_ref().map(|f| (f.framing, f.ratio, f.angle, f.pose)) != Some(framing) {
@@ -666,6 +659,17 @@ impl App {
         if let Some(s) = &mut self.outfit_portrait {
             s.settings = settings;
         }
+        if (
+            self.settings.outfit_portrait.hd,
+            self.settings.outfit_portrait.hd_local,
+            self.settings.outfit_portrait.hd_side,
+        ) != (settings.hd, settings.hd_local, settings.hd_side)
+        {
+            self.settings.outfit_portrait.hd = settings.hd;
+            self.settings.outfit_portrait.hd_local = settings.hd_local;
+            self.settings.outfit_portrait.hd_side = settings.hd_side;
+            self.settings.save();
+        }
         if !open {
             self.outfit_portrait_action(window::Action::Cancel);
         }
@@ -766,6 +770,7 @@ impl App {
             window::Action::SaveArrangement => {
                 self.capture_outfit_portrait_camera();
                 if let Some(s) = &mut self.outfit_portrait {
+                    s.settings.update_selected_arrangement();
                     if let Some(index) = s.settings.save_arrangement() {
                         log::info!("outfit portrait: saved arrangement {}", index + 1);
                         self.settings.outfit_portrait = s.settings;
@@ -774,16 +779,25 @@ impl App {
                 }
             }
             window::Action::SelectArrangement(index) => {
-                if s.settings.select_arrangement(index) {
-                    s.camera_touched = false;
-                    s.reframe = Some(Instant::now() + REFRAME);
-                    s.sun_due = true;
-                    s.preview_at = None;
-                    self.camera.roll = s.settings.camera_roll;
-                    log::info!("outfit portrait: selected arrangement {}", index + 1);
-                    self.settings.outfit_portrait = s.settings;
-                    self.settings.save();
+                self.capture_outfit_portrait_camera();
+                if let Some(s) = &mut self.outfit_portrait {
+                    s.settings.update_selected_arrangement();
+                    if s.settings.select_arrangement(index) {
+                        s.camera_touched = false;
+                        s.reframe = Some(Instant::now() + REFRAME);
+                        s.sun_due = true;
+                        s.preview_at = None;
+                        self.camera.roll = s.settings.camera_roll;
+                        log::info!("outfit portrait: selected arrangement {}", index + 1);
+                        self.settings.outfit_portrait = s.settings;
+                        self.settings.save();
+                    }
                 }
+            }
+            window::Action::RenameArrangement(index, name) => {
+                s.settings.rename_arrangement(index, &name);
+                self.settings.outfit_portrait = s.settings;
+                self.settings.save();
             }
             window::Action::DeleteArrangement => {
                 if let Some(index) = s.settings.selected_arrangement.take() {

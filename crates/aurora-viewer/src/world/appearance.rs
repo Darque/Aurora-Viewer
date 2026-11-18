@@ -126,6 +126,8 @@ pub enum Action {
         items: Vec<Uuid>,
     },
     ShowOriginal(Uuid),
+    /// Activate (true) or deactivate the gestures among favorite rows.
+    Gesture(Vec<Uuid>, bool),
     Favorite(Uuid),
     Category(Uuid, aurora_net::outfits::categories::Update),
     Folders(aurora_net::inventory::operations::Mutation),
@@ -999,6 +1001,7 @@ pub fn plan(inv: &Inventory, action: Action, worn: &HashMap<Uuid, u8>) -> Result
         | Action::ClearBase
         | Action::SetBaseLinks { .. }
         | Action::ShowOriginal(_)
+        | Action::Gesture(..)
         | Action::Favorite(_)
         | Action::OutfitImage(_)
         | Action::OutfitSnapshot(_)

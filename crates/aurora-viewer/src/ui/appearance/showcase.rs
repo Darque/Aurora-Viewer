@@ -752,9 +752,6 @@ pub(super) fn preview_panel(
     // The private full-size portrait takes precedence, then the outfit's
     // uploaded HD image, then its free square inventory thumbnail.
     let hd = model::outfit_hd_picture(inv, id);
-    if let Some(hd) = hd {
-        st.wanted_images.insert(hd);
-    }
     st.wanted_local_hd.insert(id);
     let image = st.outfit_picture(inv, id);
     if !image.is_nil() {
@@ -769,6 +766,13 @@ pub(super) fn preview_panel(
     // it below the image does not push the rest of the preview out of view.
     let picture_height = (side / aspect.max(0.1) - 44.0).max(120.0);
     let (picture, _) = ui.allocate_exact_size(Vec2::new(side, picture_height), Sense::hover());
+    if ui.is_rect_visible(picture)
+        && let Some(hd) = hd
+    {
+        st.wanted_outfit_portrait = Some(hd);
+        st.wanted_images.insert(hd);
+    }
+
     let radius = ui.visuals().window_corner_radius;
     ui.painter().rect_filled(picture, radius, p.panel);
     if let Some(t) = full {
@@ -1017,7 +1021,7 @@ fn contents(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceUi
                 st.select_item(&response, id, it.id, &order);
                 items::double_click(&response, world, it, label.is_some(), actions);
                 let selected = st.selected_items(id, it.id, &order);
-                items::context_menu(&response, p, world, st, id, it, &selected, actions);
+                items::context_menu(&response, p, world, st, items::List::Outfit(id), it, &selected, actions);
                 // the menu's Wear, for this item alone (wear_action, replace)
                 if label.is_none()
                     && matches!(it.asset_type, 5 | 6 | 13)
