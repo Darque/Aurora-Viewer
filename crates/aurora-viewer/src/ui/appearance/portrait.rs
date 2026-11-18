@@ -41,6 +41,7 @@ pub enum Action {
     /// Clear the camera adjustment for the current framing choices.
     ResetCamera,
     SaveArrangement,
+    NewArrangement,
     SelectArrangement(usize),
     DeleteArrangement,
     RenameArrangement(usize, String),
@@ -168,6 +169,10 @@ fn frame_size(available: Vec2, aspect: f32) -> Vec2 {
 
 pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSettings) -> Vec<Action> {
     let mut actions = Vec::new();
+    saved_arrangements(ui, p, s, &mut actions);
+    if widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-reset-camera")).clicked() {
+        actions.push(Action::ResetCamera);
+    }
     choice(
         ui,
         p,
@@ -215,7 +220,6 @@ pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSetting
             aurora_i18n::tr!("ui-appearance-portrait-profile"),
         ],
     );
-    saved_arrangements(ui, p, s, &mut actions);
     choice(
         ui,
         p,
@@ -240,16 +244,12 @@ pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSetting
             aurora_i18n::tr!("ui-appearance-portrait-region"),
         ],
     );
-    let reset = widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-reset-camera")).clicked();
     ui.add_space(6.0);
     // (the backdrop alone already shows our avatar alone)
     ui.add_enabled_ui(s.backdrop == Backdrop::Scene, |ui| {
         widgets::checkbox(ui, p, &mut s.hide_others, aurora_i18n::tr!("ui-appearance-portrait-hide-others"));
     });
     widgets::checkbox(ui, p, &mut s.keep, aurora_i18n::tr!("ui-appearance-portrait-keep"));
-    if reset {
-        actions.push(Action::ResetCamera);
-    }
     actions
 }
 
@@ -265,15 +265,26 @@ fn saved_arrangements(ui: &mut egui::Ui, p: &Palette, s: &PortraitSettings, acti
         .selected_arrangement
         .filter(|&i| s.arrangements.get(i).is_some_and(Option::is_some));
     ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("outfit_portrait_saved_arrangements")
+            .selected_text("")
+            .width(28.0)
+            .show_ui(ui, |ui| {
+                for i in 0..s.arrangements.len() {
+                    if let Some(name) = s.arrangement_name(i)
+                        && ui.selectable_label(selected == Some(i), name).clicked()
+                    {
+                        actions.push(Action::SelectArrangement(i));
+                    }
+                }
+            });
         if let Some(index) = selected {
             let id = ui.scope_id().with(("portrait_arrangement_name", index));
             let stored = s.arrangement_name(index).unwrap_or_default();
             let mut name = ui.ctx().data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| stored.clone());
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut name)
-                    .id(id)
-                    .desired_width((ui.available_width() - 38.0).max(60.0))
-                    .char_limit(32),
+            let field_width = (ui.available_width() - ui.spacing().item_spacing.x).max(60.0);
+            let response = ui.add_sized(
+                Vec2::new(field_width, 28.0),
+                egui::TextEdit::singleline(&mut name).id(id).char_limit(32),
             );
             if response.lost_focus() {
                 if name.trim() != stored {
@@ -286,29 +297,24 @@ fn saved_arrangements(ui: &mut egui::Ui, p: &Palette, s: &PortraitSettings, acti
                 ui.ctx().data_mut(|d| d.remove::<String>(id));
             }
         } else {
-            ui.add_enabled(
-                false,
-                egui::TextEdit::singleline(&mut aurora_i18n::tr!("ui-appearance-portrait-no-arrangement").to_string())
-                    .desired_width((ui.available_width() - 38.0).max(60.0)),
-            );
-        }
-        egui::ComboBox::from_id_salt("outfit_portrait_saved_arrangements")
-            .selected_text("")
-            .width(24.0)
-            .show_ui(ui, |ui| {
-                for i in 0..s.arrangements.len() {
-                    if let Some(name) = s.arrangement_name(i) {
-                        if ui.selectable_label(selected == Some(i), name).clicked() {
-                            actions.push(Action::SelectArrangement(i));
-                        }
-                    }
-                }
+            let field_width = (ui.available_width() - ui.spacing().item_spacing.x).max(60.0);
+            ui.add_enabled_ui(false, |ui| {
+                ui.add_sized(
+                    Vec2::new(field_width, 28.0),
+                    egui::TextEdit::singleline(&mut aurora_i18n::tr!("ui-appearance-portrait-no-arrangement").to_string()),
+                );
             });
+        }
     });
     ui.horizontal(|ui| {
-        ui.add_enabled_ui(s.arrangements.iter().any(Option::is_none), |ui| {
+        ui.add_enabled_ui(selected.is_some(), |ui| {
             if widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-save-arrangement")).clicked() {
                 actions.push(Action::SaveArrangement);
+            }
+        });
+        ui.add_enabled_ui(s.arrangements.iter().any(Option::is_none), |ui| {
+            if widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-new-arrangement")).clicked() {
+                actions.push(Action::NewArrangement);
             }
         });
         ui.add_enabled_ui(selected.is_some(), |ui| {
@@ -506,8 +512,7 @@ fn choice<T: Copy + PartialEq>(ui: &mut egui::Ui, p: &Palette, title: &str, valu
     }
 }
 
-/// The preview, or the photo to confirm, with the thirds, the corners and
-/// the "framed" pill.
+/// The preview, or the photo to confirm, with the thirds and framing marks.
 fn preview(ui: &egui::Ui, p: &Palette, frame: Rect, view: &View) {
     let painter = ui.painter_at(frame);
     let radius = ui.visuals().window_corner_radius;
@@ -545,24 +550,6 @@ fn preview(ui: &egui::Ui, p: &Palette, frame: Rect, view: &View) {
         painter.line_segment([at, at + Vec2::new(arm * dx, 0.0)], corner);
         painter.line_segment([at, at + Vec2::new(0.0, arm * dy)], corner);
     }
-    // the pill: framed automatically, or the photo to confirm
-    let (dot, text) = if view.shot.is_some() {
-        (p.violet_light, aurora_i18n::tr!("ui-appearance-portrait-check"))
-    } else {
-        (p.success, aurora_i18n::tr!("ui-appearance-portrait-framed"))
-    };
-    let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(11.0), p.ink);
-    let pill = Rect::from_center_size(
-        egui::pos2(frame.center().x, frame.top() + 24.0),
-        Vec2::new(galley.size().x + 32.0, 24.0),
-    );
-    painter.rect_filled(pill, radius, p.navy.gamma_multiply(0.7));
-    painter.circle_filled(egui::pos2(pill.left() + 13.0, pill.center().y), 3.5, dot);
-    painter.galley(
-        egui::pos2(pill.left() + 22.0, pill.center().y - galley.size().y / 2.0),
-        galley,
-        p.ink,
-    );
 }
 
 /// An icon and a muted, wrapped line.

@@ -257,10 +257,8 @@ impl App {
         if s.kind == Kind::Viewfinder && !s.was_open {
             self.panels.snapshot = false;
         }
-        // Persist edits to the selected view as well as the current choices.
-        if s.settings.keep {
-            s.settings.update_selected_arrangement();
-        }
+        // Current choices are kept separately. Explicit arrangements change
+        // only when the user presses Save.
         if self.settings.outfit_portrait != s.settings {
             self.settings.outfit_portrait = s.settings;
             self.settings.save();
@@ -770,18 +768,27 @@ impl App {
             window::Action::SaveArrangement => {
                 self.capture_outfit_portrait_camera();
                 if let Some(s) = &mut self.outfit_portrait {
-                    s.settings.update_selected_arrangement();
-                    if let Some(index) = s.settings.save_arrangement() {
-                        log::info!("outfit portrait: saved arrangement {}", index + 1);
+                    if let Some(index) = s.settings.selected_arrangement {
+                        s.settings.save_selected_arrangement();
+                        log::info!("outfit portrait: updated arrangement {}", index + 1);
                         self.settings.outfit_portrait = s.settings;
                         self.settings.save();
                     }
                 }
             }
+            window::Action::NewArrangement => {
+                self.capture_outfit_portrait_camera();
+                if let Some(s) = &mut self.outfit_portrait
+                    && let Some(index) = s.settings.save_arrangement()
+                {
+                    log::info!("outfit portrait: created arrangement {}", index + 1);
+                    self.settings.outfit_portrait = s.settings;
+                    self.settings.save();
+                }
+            }
             window::Action::SelectArrangement(index) => {
                 self.capture_outfit_portrait_camera();
                 if let Some(s) = &mut self.outfit_portrait {
-                    s.settings.update_selected_arrangement();
                     if s.settings.select_arrangement(index) {
                         s.camera_touched = false;
                         s.reframe = Some(Instant::now() + REFRAME);

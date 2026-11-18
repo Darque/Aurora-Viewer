@@ -4414,7 +4414,6 @@ ui-appearance-portrait-auto = Auto portrait
 ui-appearance-portrait-new-photo = New photo (auto portrait)
 ui-appearance-portrait-photo-mode = Photo mode, square frame
 ui-appearance-portrait-title = Auto portrait — { $outfit }
-ui-appearance-portrait-framed = Framed automatically
 ui-appearance-portrait-check = The photo: use it or retake it
 ui-appearance-portrait-preparing = Preparing the preview…
 ui-appearance-portrait-local = The pose, the backdrop and the light are on your screen only: others see you as usual. HUDs and names are left out of the photo. Your camera goes back where it was afterwards. The photo becomes the outfit's free 256 × 256 picture, kept in your inventory.
@@ -15758,7 +15757,8 @@ base-outfits-clear = Remove active base
 
 ui-appearance-portrait-default = Default
 ui-appearance-portrait-no-arrangement = No saved arrangement
-ui-appearance-portrait-save-arrangement = New
+ui-appearance-portrait-save-arrangement = Save
+ui-appearance-portrait-new-arrangement = New
 ui-appearance-portrait-delete-arrangement = Delete
 # Preferences › Network › Proxy, and its login messages (aurora-proxy)
 proxy-socks-invalid-host = Invalid SOCKS 5 proxy address or port. Check Preferences › Network and cache › Proxy.

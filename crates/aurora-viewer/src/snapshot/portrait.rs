@@ -291,7 +291,13 @@ impl PortraitSettings {
     /// defaults (with "keep" left as the user set it).
     pub fn opening(saved: &Self) -> Self {
         if saved.keep {
-            *saved
+            let mut opened = *saved;
+            if let Some(index) = opened.selected_arrangement
+                && !opened.select_arrangement(index)
+            {
+                opened.selected_arrangement = None;
+            }
+            opened
         } else {
             Self {
                 keep: false,
@@ -388,7 +394,9 @@ impl PortraitSettings {
         }
     }
 
-    pub fn update_selected_arrangement(&mut self) {
+    /// Save the current framing and camera into the selected arrangement.
+    /// This is only called from the explicit Save button.
+    pub fn save_selected_arrangement(&mut self) {
         let Some(index) = self.selected_arrangement else {
             return;
         };
@@ -736,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn edited_arrangements_are_named_uniquely_and_reopen_with_latest_view() {
+    fn edited_arrangements_are_named_uniquely_and_save_only_on_request() {
         let mut settings = PortraitSettings::default();
         let first = settings.save_arrangement().unwrap();
         let second = settings.save_arrangement().unwrap();
@@ -747,7 +755,12 @@ mod tests {
         assert_eq!(settings.arrangement_name(second).as_deref(), Some("Headshot 2"));
         settings.framing = Framing::Face;
         settings.camera_roll = 0.35;
-        settings.update_selected_arrangement();
+        let unsaved = PortraitSettings::opening(&settings);
+        assert_eq!(unsaved.framing, Framing::Body);
+        assert_eq!(unsaved.ratio, Ratio::Square);
+        assert_eq!(unsaved.camera_roll, 0.0);
+
+        settings.save_selected_arrangement();
         let encoded = serde_json::to_string(&settings).unwrap();
         let saved: PortraitSettings = serde_json::from_str(&encoded).unwrap();
         let reopened = PortraitSettings::opening(&saved);
