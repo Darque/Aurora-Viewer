@@ -922,6 +922,9 @@ pub struct Settings {
     pub show_appearance: bool,
     /// Crop outfit gallery previews to fill their frames (off: fit the whole image).
     pub appearance_fill_previews: bool,
+    /// The chosen child folder for each outfit that has variants.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub appearance_variant_selections: std::collections::HashMap<uuid::Uuid, uuid::Uuid>,
     /// The order of the Favorite Wearables list (FSWearableFavoritesSortOrder).
     pub wearable_favorites_sort: crate::world::wearable_favorites::SortOrder,
     /// The Favorite Wearables' custom orders (`SortOrder::Custom`), per
@@ -2451,6 +2454,7 @@ impl Default for Settings {
             show_inventory: false,
             show_appearance: false,
             appearance_fill_previews: false,
+            appearance_variant_selections: Default::default(),
             wearable_favorites_sort: Default::default(),
             wearable_favorites_order: Default::default(),
             appearance_tab: 0,

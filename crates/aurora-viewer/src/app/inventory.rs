@@ -1209,7 +1209,6 @@ impl App {
                 | crate::world::appearance::Action::SaveIn(..)
                 | crate::world::appearance::Action::ImportJson { .. }
         );
-        let attachments = crate::world::appearance::attachments_for_action(&self.world.inventory, self.world.agent_id, &action);
         let removals: Vec<Uuid> = match &action {
             Action::Remove(id) => vec![*id],
             Action::RemoveItems(ids) | Action::Force { remove: ids, .. } => ids.clone(),
@@ -1226,19 +1225,24 @@ impl App {
         }
         warning_roots.sort_unstable();
         warning_roots.dedup();
-        let mut skipped_cycles: Vec<_> = warning_roots
-            .iter()
-            .filter_map(|root| base_outfits::resolve_for_wear(&self.world.inventory, *root).ok())
-            .flat_map(|report| report.cycles)
-            .collect();
+        let agent = self.world.agent_id;
+        let attachment_points = self.world.outfit_attachment_points();
+        let base_data = &self.appearance_ui.base_sets.data;
+        let selections = &self.appearance_ui.variant_selections;
+        let (attachments, mut skipped_cycles, plan) =
+            crate::world::outfit_folders::with_selected_variants(&mut self.world.inventory, selections, |inventory| {
+                let attachments = crate::world::appearance::attachments_for_action(inventory, agent, &action);
+                let skipped_cycles: Vec<Uuid> = warning_roots
+                    .iter()
+                    .filter_map(|root| base_outfits::resolve_for_wear(inventory, *root).ok())
+                    .flat_map(|report| report.cycles)
+                    .collect();
+                let plan = base_outfits::plan(inventory, action.clone(), &attachment_points, base_data);
+                (attachments, skipped_cycles, plan)
+            });
         skipped_cycles.sort_unstable();
         skipped_cycles.dedup();
-        match base_outfits::plan(
-            &self.world.inventory,
-            action,
-            &self.world.outfit_attachment_points(),
-            &self.appearance_ui.base_sets.data,
-        ) {
+        match plan {
             Ok((change, sync, active)) => {
                 self.appearance_ui.pending_base =
                     active.or_else(|| sync.then(|| self.appearance_ui.base_sets.data.active.clone()).flatten());

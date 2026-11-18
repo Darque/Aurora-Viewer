@@ -21,7 +21,9 @@ fn resolvable_folder(inv: &Inventory, id: Uuid) -> bool {
     inv.folders.get(&id).is_some_and(|folder| {
         !folder.library
             && Some(id) != my_outfits
-            && (super::outfit_folders::in_my_outfits(inv, id) || super::outfit_folders::container(inv, id))
+            && (super::outfit_folders::in_my_outfits(inv, id)
+                || super::outfit_folders::container(inv, id)
+                || super::outfit_folders::variant_parent(inv, id).is_some())
     })
 }
 
@@ -30,7 +32,7 @@ fn resolvable_folder(inv: &Inventory, id: Uuid) -> bool {
 /// sharing a descendant is not a cycle. The walk is iterative so malformed
 /// inventory cannot exhaust the stack. Each original is returned once.
 pub fn resolve(inv: &Inventory, root: Uuid) -> Result<Vec<OutfitLink>, ResolveError> {
-    resolve_walk(inv, root, None, false).map(|report| report.links)
+    resolve_walk(inv, root, None, false, None).map(|report| report.links)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -44,14 +46,31 @@ pub struct ResolveReport {
 /// Resolve a base for wearing. A cyclic edge is skipped while its siblings
 /// continue, so malformed inventory cannot prevent the rest of the outfit.
 pub fn resolve_for_wear(inv: &Inventory, root: Uuid) -> Result<ResolveReport, ResolveError> {
-    resolve_walk(inv, root, None, true)
+    resolve_walk(inv, root, None, true, None)
+}
+
+/// Resolve an outfit for wearing while including only its remembered child
+/// variant. An outfit with no remembered selection uses its first sorted
+/// variant, matching the Appearance preview.
+pub fn resolve_for_wear_selected(
+    inv: &Inventory,
+    root: Uuid,
+    selected_variants: &HashMap<Uuid, Uuid>,
+) -> Result<ResolveReport, ResolveError> {
+    resolve_walk(inv, root, None, true, Some(selected_variants))
 }
 
 fn resolve_inner(inv: &Inventory, root: Uuid, forbidden: Option<Uuid>) -> Result<Vec<OutfitLink>, ResolveError> {
-    resolve_walk(inv, root, forbidden, false).map(|report| report.links)
+    resolve_walk(inv, root, forbidden, false, None).map(|report| report.links)
 }
 
-fn resolve_walk(inv: &Inventory, root: Uuid, forbidden: Option<Uuid>, skip_cycles: bool) -> Result<ResolveReport, ResolveError> {
+fn resolve_walk(
+    inv: &Inventory,
+    root: Uuid,
+    forbidden: Option<Uuid>,
+    skip_cycles: bool,
+    selected_variants: Option<&HashMap<Uuid, Uuid>>,
+) -> Result<ResolveReport, ResolveError> {
     enum Visit {
         Enter(Uuid),
         Leave(Uuid),
@@ -92,10 +111,20 @@ fn resolve_walk(inv: &Inventory, root: Uuid, forbidden: Option<Uuid>, skip_cycle
         }
         active.insert(id);
         pending.push(Visit::Leave(id));
+        let choices = selected_variants.map_or_else(Vec::new, |_| super::outfit_folders::variants(inv, id));
+        let selected = selected_variants
+            .and_then(|remembered| remembered.get(&id).copied())
+            .filter(|variant| choices.contains(variant))
+            .or_else(|| choices.first().copied());
         let mut children = folder.children.clone();
+        if !choices.is_empty() {
+            children.retain(|child| !choices.contains(child) || Some(*child) == selected);
+        }
         for link in appearance::folder_links(inv, id) {
             if link.folder {
-                children.push(link.target);
+                if choices.is_empty() || !choices.contains(&link.target) || Some(link.target) == selected {
+                    children.push(link.target);
+                }
             } else if inv.broken(&link.target) {
                 return Err(ResolveError::Missing);
             } else if let Some(item) = inv.items.get(&link.target) {
@@ -828,6 +857,7 @@ pub fn plan(
                     .folders
                     .get(&id)
                     .is_some_and(|folder| folder.info.type_default == appearance::FT_OUTFIT)
+                    && super::outfit_folders::variants(inv, id).is_empty()
                 {
                     appearance::usable_links(inv, id)
                 } else {

@@ -784,7 +784,7 @@ pub fn plan(inv: &Inventory, action: Action, worn: &HashMap<Uuid, u8>) -> Result
                 }
                 require_complete(inv, *id)?;
                 warn_broken(inv, *id);
-                links.extend(if contents {
+                links.extend(if contents || !super::outfit_folders::variants(inv, *id).is_empty() {
                     wearable_contents(inv, *id)?
                 } else {
                     usable_links(inv, *id)

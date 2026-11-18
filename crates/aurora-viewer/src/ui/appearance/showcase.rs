@@ -61,7 +61,7 @@ pub(super) struct State {
     banner_hidden: bool,
     cache: Option<Cache>,
     /// The item count of each outfit drawn, until the inventory changes.
-    counts: (u64, HashMap<Uuid, usize>),
+    counts: (u64, HashMap<(Uuid, Option<Uuid>), usize>),
 }
 
 /// The outfits of the grid and the rail's counts, built again only when the
@@ -69,6 +69,7 @@ pub(super) struct State {
 struct Cache {
     generation: u64,
     shown: Vec<Uuid>,
+    selected_variants: Vec<(Uuid, Option<Uuid>)>,
     filter: Filter,
     outfits: Vec<Uuid>,
     favorites: usize,
@@ -78,17 +79,22 @@ struct Cache {
 impl State {
     /// The collection's outfits, in the order of `shown` (the window's
     /// outfits, filtered by the search and sorted).
-    fn outfits(&mut self, st_pictures: &mut dyn FnMut(Uuid) -> bool, world: &World, shown: &[Uuid]) -> &Cache {
+    fn outfits(
+        &mut self,
+        st_pictures: &mut dyn FnMut(Uuid) -> bool,
+        world: &World,
+        shown: &[Uuid],
+        selected_variants: &[(Uuid, Option<Uuid>)],
+    ) -> &Cache {
         let inv = &world.inventory;
         if let Filter::Folder(id) = self.filter
             && !crate::world::outfit_folders::is_group(inv, id)
         {
             self.filter = Filter::All;
         }
-        let fresh = self
-            .cache
-            .as_ref()
-            .is_some_and(|c| c.generation == inv.generation && c.filter == self.filter && c.shown == shown);
+        let fresh = self.cache.as_ref().is_some_and(|c| {
+            c.generation == inv.generation && c.filter == self.filter && c.shown == shown && c.selected_variants == selected_variants
+        });
         if !fresh {
             let favorite = |id: &Uuid| inv.folders.get(id).is_some_and(|f| f.info.favorite);
             let pictured: HashSet<Uuid> = shown.iter().copied().filter(|id| st_pictures(*id)).collect();
@@ -117,6 +123,7 @@ impl State {
             self.cache = Some(Cache {
                 generation: inv.generation,
                 shown: shown.to_vec(),
+                selected_variants: selected_variants.to_vec(),
                 filter: self.filter,
                 outfits,
                 favorites: shown.iter().filter(|id| favorite(id)).count(),
@@ -126,17 +133,41 @@ impl State {
         self.cache.as_ref().expect("built above")
     }
 
-    /// How many items the outfit `id` links to.
-    fn item_count(&mut self, inv: &crate::world::inventory::Inventory, id: Uuid) -> usize {
+    /// How many direct outfit items and selected-variant items are shown.
+    fn item_count(&mut self, inv: &crate::world::inventory::Inventory, id: Uuid, variant: Option<Uuid>) -> usize {
         let (generation, counts) = &mut self.counts;
         if *generation != inv.generation {
             *generation = inv.generation;
             counts.clear();
         }
-        *counts
-            .entry(id)
-            .or_insert_with(|| model::folder_links(inv, id).into_iter().filter(|l| !l.folder).count())
+        *counts.entry((id, variant)).or_insert_with(|| {
+            let mut pending = vec![(id, false)];
+            if let Some(variant) = variant {
+                pending.push((variant, true));
+            }
+            let mut folders = HashSet::new();
+            let mut items = HashSet::new();
+            while let Some((folder, descend)) = pending.pop() {
+                if !folders.insert(folder) {
+                    continue;
+                }
+                items.extend(
+                    model::folder_links(inv, folder)
+                        .into_iter()
+                        .filter(|link| !link.folder)
+                        .map(|link| link.target),
+                );
+                if descend && let Some(contents) = inv.folders.get(&folder) {
+                    pending.extend(contents.children.iter().copied().map(|child| (child, true)));
+                }
+            }
+            items.len()
+        })
     }
+}
+
+pub(super) fn selected_picture_folder(st: &AppearanceUi, inv: &crate::world::inventory::Inventory, id: Uuid) -> Uuid {
+    crate::world::outfit_folders::selected_variant(inv, id, &st.variant_selections).unwrap_or(id)
 }
 
 /// Whether a showcase `width` points wide shows the preview beside its
@@ -218,8 +249,20 @@ pub(super) fn show(
     let face = p.field.gamma_multiply(0.65);
     let (no_picture, favorites, outfits) = {
         let mut state = std::mem::take(&mut st.showcase_state);
-        let mut pictured = |id| !st.outfit_picture(&world.inventory, id).is_nil();
-        let cache = state.outfits(&mut pictured, world, shown);
+        let selected_variants: Vec<_> = shown
+            .iter()
+            .map(|id| {
+                (
+                    *id,
+                    crate::world::outfit_folders::selected_variant(&world.inventory, *id, &st.variant_selections),
+                )
+            })
+            .collect();
+        let mut pictured = |id| {
+            let picture_folder = selected_picture_folder(st, &world.inventory, id);
+            !st.outfit_picture(&world.inventory, picture_folder).is_nil()
+        };
+        let cache = state.outfits(&mut pictured, world, shown, &selected_variants);
         let out = (cache.no_picture, cache.favorites, cache.outfits.clone());
         st.showcase_state = state;
         out
@@ -535,7 +578,8 @@ fn card_ui(
     let radius = ui.visuals().window_corner_radius;
     let painter = ui.painter();
     painter.rect_filled(picture, radius, p.field);
-    let image = st.outfit_picture(inv, id);
+    let picture_folder = selected_picture_folder(st, inv, id);
+    let image = st.outfit_picture(inv, picture_folder);
     if !image.is_nil() {
         st.wanted_images.insert(image);
     }
@@ -614,7 +658,7 @@ fn card_ui(
         if widgets::action_button_if(&mut child, p, "user-scan", label, widgets::ActionKind::Primary, at.size(), enabled).clicked()
             && enabled
         {
-            actions.push(Action::OutfitPortrait(id));
+            actions.push(Action::OutfitPortrait(picture_folder));
         }
     }
     if hot {
@@ -636,7 +680,11 @@ fn card_ui(
     let name = ui.painter().layout_job(job);
     let name_h = name.size().y;
     ui.painter().galley(egui::pos2(rect.left(), text_top), name, p.ink);
-    let count = st.showcase_state.item_count(inv, id);
+    let count = st.showcase_state.item_count(
+        inv,
+        id,
+        crate::world::outfit_folders::selected_variant(inv, id, &st.variant_selections),
+    );
     let meta_y = text_top + name_h + 1.0;
     let meta_h = ui.fonts_mut(|fonts| fonts.row_height(&meta_font()));
     let meta = ui
@@ -700,7 +748,7 @@ fn hover_actions(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut Appeara
         .clicked()
         && rules.folder
     {
-        actions.push(Action::OutfitPortrait(id));
+        actions.push(Action::OutfitPortrait(selected_picture_folder(st, &world.inventory, id)));
     }
     let add = aurora_i18n::tr!("ui-appearance-gallery-add-to-your-outfit");
     if !is_base
@@ -740,6 +788,9 @@ pub(super) fn preview_panel(
 ) {
     let inv = &world.inventory;
     let Some(folder) = inv.folders.get(&id) else { return };
+    let variants = crate::world::outfit_folders::variants(inv, id);
+    let selected_variant = crate::world::outfit_folders::selected_variant(inv, id, &st.variant_selections);
+    let picture_folder = selected_variant.unwrap_or(id);
     let worn = items::worn_items(world);
     let locks = world.rlva_wear_locks();
     let rules = gallery::menu_rules(inv, &worn, st.pending.is_some(), id).map(|mut rules| {
@@ -751,13 +802,13 @@ pub(super) fn preview_panel(
     let side = ui.available_width();
     // The private full-size portrait takes precedence, then the outfit's
     // uploaded HD image, then its free square inventory thumbnail.
-    let hd = model::outfit_hd_picture(inv, id);
-    st.wanted_local_hd.insert(id);
-    let image = st.outfit_picture(inv, id);
+    let hd = model::outfit_hd_picture(inv, picture_folder);
+    st.wanted_local_hd.insert(picture_folder);
+    let image = st.outfit_picture(inv, picture_folder);
     if !image.is_nil() {
         st.wanted_images.insert(image);
     }
-    let local = st.local_hd_images.get(&id);
+    let local = st.local_hd_images.get(&picture_folder);
     let uploaded = hd.and_then(|hd| images.get(&hd));
     let thumbnail = images.get(&image);
     let full = local.or(uploaded).or(thumbnail);
@@ -830,9 +881,9 @@ pub(super) fn preview_panel(
             && own
         {
             if icon == "photo-filled" {
-                st.local_hd_detail = Some(id);
+                st.local_hd_detail = Some(picture_folder);
             } else {
-                actions.push(Action::OutfitPhotoMode(id));
+                actions.push(Action::OutfitPhotoMode(picture_folder));
             }
         }
     }
@@ -840,7 +891,11 @@ pub(super) fn preview_panel(
     let size = Vec2::new(child.available_width(), 36.0);
     let enabled = own && st.pending.is_none();
     if widgets::action_button_if(&mut child, p, "user-scan", portrait, widgets::ActionKind::Primary, size, enabled).clicked() && enabled {
-        actions.push(Action::OutfitPortrait(id));
+        actions.push(Action::OutfitPortrait(picture_folder));
+    }
+    if !variants.is_empty() {
+        ui.add_space(4.0);
+        variant_selector(ui, p, st, inv, id, &variants, picture_folder);
     }
     ui.add_space(10.0);
     let parent = folder.info.parent;
@@ -937,7 +992,7 @@ pub(super) fn preview_panel(
         });
     }
     ui.add_space(8.0);
-    contents(ui, p, world, st, id, actions);
+    contents(ui, p, world, st, id, selected_variant, actions);
     ui.add_space(8.0);
     let copy = aurora_i18n::tr!("inventory-copy-outfit-list");
     if widgets::action_button_if(
@@ -968,14 +1023,101 @@ fn section_of(asset_type: i32) -> usize {
 
 /// The items of the outfit `id`, by section, with the list's rows, menus and
 /// double clicks; a hovered item not worn offers to be worn alone.
-fn contents(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceUi, id: Uuid, actions: &mut Vec<Action>) {
+fn variant_selector(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    st: &mut AppearanceUi,
+    inv: &crate::world::inventory::Inventory,
+    outfit: Uuid,
+    variants: &[Uuid],
+    selected: Uuid,
+) {
+    let Some(index) = variants.iter().position(|variant| *variant == selected) else {
+        return;
+    };
+    let (previous, next) = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let enabled = variants.len() > 1;
+            let previous = ui
+                .add_enabled_ui(enabled, |ui| {
+                    widgets::glass_action_icon(ui, p, "arrow-left", aurora_i18n::tr!("common-previous"), Vec2::splat(28.0), p.ink)
+                })
+                .inner
+                .on_hover_text(aurora_i18n::tr!("common-previous"))
+                .clicked();
+            let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
+            ui.painter().rect_filled(field, ui.visuals().window_corner_radius, p.field);
+            ui.painter().rect_stroke(
+                field,
+                ui.visuals().window_corner_radius,
+                egui::Stroke::new(1.0, p.raised),
+                egui::StrokeKind::Inside,
+            );
+            let name = inv
+                .folders
+                .get(&selected)
+                .map_or_else(String::new, |folder| folder.info.name.clone());
+            let mut job = egui::text::LayoutJob::single_section(name, egui::TextFormat::simple(egui::FontId::proportional(12.0), p.ink));
+            job.wrap = egui::text::TextWrapping::truncate_at_width((field.width() - 12.0).max(1.0));
+            let text = ui.painter().layout_job(job);
+            ui.painter().galley(field.center() - text.size() / 2.0, text, p.ink);
+            let next = ui
+                .add_enabled_ui(enabled, |ui| {
+                    widgets::glass_action_icon(ui, p, "arrow-right", aurora_i18n::tr!("common-next"), Vec2::splat(28.0), p.ink)
+                })
+                .inner
+                .on_hover_text(aurora_i18n::tr!("common-next"))
+                .clicked();
+            (previous, next)
+        })
+        .inner;
+    if previous || next {
+        let next_index = if previous {
+            (index + variants.len() - 1) % variants.len()
+        } else {
+            (index + 1) % variants.len()
+        };
+        st.variant_selections.insert(outfit, variants[next_index]);
+    }
+}
+
+/// The items of the outfit `id` and the selected variant subtree, by
+/// section, with rows, menus and double clicks.
+fn contents(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    world: &World,
+    st: &mut AppearanceUi,
+    id: Uuid,
+    selected_variant: Option<Uuid>,
+    actions: &mut Vec<Action>,
+) {
     let inv = &world.inventory;
-    let mut links = model::folder_links(inv, id);
+    let mut pending = selected_variant.map_or_else(|| vec![(id, false)], |variant| vec![(variant, true), (id, false)]);
+    let mut visited = HashSet::new();
+    let mut sources = HashMap::new();
+    let mut links = Vec::new();
+    while let Some((folder, descend)) = pending.pop() {
+        if !visited.insert(folder) {
+            continue;
+        }
+        let mut folder_links = model::folder_links(inv, folder);
+        items::sort_links(inv, &mut folder_links);
+        for link in folder_links.into_iter().filter(|link| !link.folder) {
+            sources.entry(link.target).or_insert(folder);
+            links.push(link);
+        }
+        if descend && let Some(contents) = inv.folders.get(&folder) {
+            pending.extend(contents.children.iter().copied().map(|child| (child, true)));
+        }
+    }
     items::sort_links(inv, &mut links);
+    let mut seen_links = HashSet::new();
+    links.retain(|link| seen_links.insert(link.target));
     let found: Vec<_> = links
         .iter()
-        .filter(|l| !l.folder)
-        .filter_map(|l| inv.items.get(&l.target))
+        .filter_map(|link| inv.items.get(&link.target).map(|item| (sources[&link.target], item)))
         .collect();
     if found.is_empty() {
         ui.label(
@@ -989,7 +1131,7 @@ fn contents(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceUi
         );
         return;
     }
-    let order: Vec<Uuid> = found.iter().map(|it| it.id).collect();
+    let order: Vec<Uuid> = found.iter().map(|(_, it)| it.id).collect();
     st.retain_items(id, &order);
     let worn = items::worn_labels(world);
     let locks = world.rlva_wear_locks();
@@ -1000,7 +1142,11 @@ fn contents(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceUi
         aurora_i18n::tr!("ui-appearance-showcase-other"),
     ];
     for (section, title) in titles.iter().enumerate() {
-        let rows: Vec<_> = found.iter().filter(|it| section_of(it.asset_type) == section).copied().collect();
+        let rows: Vec<_> = found
+            .iter()
+            .filter(|(_, it)| section_of(it.asset_type) == section)
+            .copied()
+            .collect();
         if rows.is_empty() {
             continue;
         }
@@ -1011,7 +1157,7 @@ fn contents(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceUi
                 ui.label(egui::RichText::new(rows.len().to_string()).size(11.0).color(p.muted));
             });
         });
-        for it in rows {
+        for (source, it) in rows {
             ui.push_id(("showcase_item", id, it.id), |ui| {
                 let label = worn.get(&it.id).map(String::as_str);
                 let response = super::row(ui, p, it, "", st.item_selected(id, it.id), label);
@@ -1021,7 +1167,20 @@ fn contents(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceUi
                 st.select_item(&response, id, it.id, &order);
                 items::double_click(&response, world, it, label.is_some(), actions);
                 let selected = st.selected_items(id, it.id, &order);
-                items::context_menu(&response, p, world, st, items::List::Outfit(id), it, &selected, actions);
+                let selected_in_source: Vec<_> = selected
+                    .into_iter()
+                    .filter(|selected| sources.get(selected).is_some_and(|folder| *folder == source))
+                    .collect();
+                items::context_menu(
+                    &response,
+                    p,
+                    world,
+                    st,
+                    items::List::Outfit(source),
+                    it,
+                    &selected_in_source,
+                    actions,
+                );
                 // the menu's Wear, for this item alone (wear_action, replace)
                 if label.is_none()
                     && matches!(it.asset_type, 5 | 6 | 13)
@@ -1074,8 +1233,17 @@ mod tests {
         st.showcase_state.filter = filter;
         let shown = st.shown_outfits(&world.inventory);
         let mut state = std::mem::take(&mut st.showcase_state);
+        let selected_variants: Vec<_> = shown
+            .iter()
+            .map(|id| {
+                (
+                    *id,
+                    crate::world::outfit_folders::selected_variant(&world.inventory, *id, &st.variant_selections),
+                )
+            })
+            .collect();
         let mut pictured = |id| !st.outfit_picture(&world.inventory, id).is_nil();
-        let cache = state.outfits(&mut pictured, world, &shown);
+        let cache = state.outfits(&mut pictured, world, &shown, &selected_variants);
         let out = (cache.outfits.clone(), cache.favorites, cache.no_picture);
         st.showcase_state = state;
         out
@@ -1119,6 +1287,26 @@ mod tests {
         world.inventory.generation += 1;
         collection(&world, &mut st, Filter::Folder(Uuid::from_u128(740)));
         assert_eq!(st.showcase_state.filter, Filter::All);
+    }
+
+    #[test]
+    fn changing_a_variant_rebuilds_picture_collections() {
+        let (world, _) = grouped();
+        let outfit = Uuid::from_u128(703);
+        let first = Uuid::from_u128(901);
+        let second = Uuid::from_u128(902);
+        let shown = [outfit];
+        let mut state = State::default();
+        let mut unpictured = |_| false;
+        assert_eq!(
+            state.outfits(&mut unpictured, &world, &shown, &[(outfit, Some(first))]).no_picture,
+            1
+        );
+        let mut pictured = |_| true;
+        assert_eq!(
+            state.outfits(&mut pictured, &world, &shown, &[(outfit, Some(second))]).no_picture,
+            0
+        );
     }
 
     #[test]

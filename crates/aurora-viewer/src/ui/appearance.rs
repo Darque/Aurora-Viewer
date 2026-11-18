@@ -54,6 +54,8 @@ pub struct AppearanceUi {
     pub(crate) restore_base_after_outfit: Option<Option<Vec<Uuid>>>,
     pub tab: usize,
     pub fill_previews: bool,
+    /// The chosen child folder for each outfit that has variants.
+    pub variant_selections: HashMap<Uuid, Uuid>,
     /// The gallery tab as Aurora's showcase (`showcase.rs`) rather than the
     /// Legacy Viewer's tiles: the app sets it from Preferences › Aurora.
     pub showcase: bool,
@@ -508,6 +510,30 @@ impl AppearanceUi {
         worn: &HashSet<Uuid>,
     ) -> Vec<aurora_net::NetCommand> {
         self.base_sets.refresh(inv);
+        // Variant contents are needed for the outfit currently shown in the
+        // preview. Keep other outfits lazy: a wardrobe can contain thousands
+        // of nested folders, and only the selected outfit needs these reads.
+        let preview_outfit = self
+            .outfit_selection
+            .focus
+            .or_else(|| self.base_sets.data.active.as_ref().map(|base| base.folder));
+        if let Some(outfit) = preview_outfit
+            && let Some(folder) = inv
+                .folders
+                .get(&outfit)
+                .filter(|folder| folder.info.type_default == model::FT_OUTFIT)
+        {
+            let children = folder.children.clone();
+            for child in children {
+                if inv
+                    .folders
+                    .get(&child)
+                    .is_some_and(|folder| folder.info.parent == outfit && !folder.library)
+                {
+                    inv.request(child);
+                }
+            }
+        }
         // a failed read is asked again (`Inventory::items_failed` counts them)
         for id in inv.take_item_retries() {
             self.requested_items.remove(&id);
@@ -1108,7 +1134,8 @@ fn gallery(
                             egui::Stroke::new(1.0, if selected { p.violet } else { p.raised }),
                             egui::StrokeKind::Inside,
                         );
-                        let image = st.outfit_picture(&world.inventory, *id);
+                        let picture_folder = showcase::selected_picture_folder(st, &world.inventory, *id);
+                        let image = st.outfit_picture(&world.inventory, picture_folder);
                         if !image.is_nil() {
                             st.wanted_images.insert(image);
                         }

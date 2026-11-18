@@ -19946,6 +19946,7 @@ impl App {
                 let complexity = self.scene.avatar_complexity.get(&self.world.agent_id).copied().unwrap_or_default();
                 let mut open = self.panels.appearance;
                 self.appearance_ui.fill_previews = self.settings.appearance_fill_previews;
+                self.appearance_ui.variant_selections = self.settings.appearance_variant_selections.clone();
                 self.appearance_ui.showcase = !self.settings.classic_outfit_gallery;
                 for action in ui::appearance::show(
                     &ctx,
@@ -19963,6 +19964,10 @@ impl App {
                 }
                 if self.settings.appearance_fill_previews != self.appearance_ui.fill_previews {
                     self.settings.appearance_fill_previews = self.appearance_ui.fill_previews;
+                    self.settings.save();
+                }
+                if self.settings.appearance_variant_selections != self.appearance_ui.variant_selections {
+                    self.settings.appearance_variant_selections = self.appearance_ui.variant_selections.clone();
                     self.settings.save();
                 }
                 self.panels.appearance = open;

@@ -58,24 +58,29 @@ const KEY_HEIGHT: f32 = 40.0;
 
 /// A portrait is ready when every resolved item in its outfit is in Current
 /// Outfit. Other worn outfits can coexist with a base outfit being pictured.
-fn outfit_is_worn(inv: &crate::world::inventory::Inventory, outfit: Uuid, bases: &HashSet<Uuid>) -> bool {
+fn outfit_is_worn(
+    inv: &crate::world::inventory::Inventory,
+    outfit: Uuid,
+    bases: &HashSet<Uuid>,
+    selected_variants: &std::collections::HashMap<Uuid, Uuid>,
+) -> bool {
     use crate::world::{appearance, base_outfits};
 
     if !appearance::complete(inv, outfit) {
         return false;
     }
     let mut expected = if bases.contains(&outfit) {
-        let Ok(report) = base_outfits::resolve_for_wear(inv, outfit) else {
+        let Ok(report) = base_outfits::resolve_for_wear_selected(inv, outfit, selected_variants) else {
             return false;
         };
         report.links
     } else {
-        let mut links: Vec<_> = appearance::usable_links(inv, outfit)
-            .into_iter()
-            .filter(|link| !link.folder)
-            .collect();
+        let Ok(report) = base_outfits::resolve_for_wear_selected(inv, outfit, selected_variants) else {
+            return false;
+        };
+        let mut links = report.links;
         for base in base_outfits::linked_bases(inv, outfit, bases) {
-            let Ok(report) = base_outfits::resolve_for_wear(inv, base) else {
+            let Ok(report) = base_outfits::resolve_for_wear_selected(inv, base, selected_variants) else {
                 return false;
             };
             links.extend(report.links);
@@ -106,7 +111,10 @@ pub(super) struct Shot {
 }
 
 pub(super) struct Session {
+    /// The parent folder whose variant composition will be worn.
     outfit: Uuid,
+    /// The folder that owns this variant's free and high-resolution images.
+    picture_folder: Uuid,
     pub(super) kind: Kind,
     pub(super) settings: PortraitSettings,
     /// What the session changes, as it was.
@@ -162,14 +170,20 @@ impl App {
         if self.outfit_portrait.as_ref().is_some_and(|s| s.batch) {
             return;
         }
-        self.start_outfit_portrait(outfit, kind, false);
+        let picture_folder = outfit;
+        let wear_outfit = crate::world::outfit_folders::variant_parent(&self.world.inventory, outfit).unwrap_or(outfit);
+        self.open_outfit_portrait_targets(wear_outfit, picture_folder, kind);
     }
 
-    fn start_outfit_portrait(&mut self, outfit: Uuid, kind: Kind, batch: bool) {
+    fn open_outfit_portrait_targets(&mut self, outfit: Uuid, picture_folder: Uuid, kind: Kind) {
+        self.start_outfit_portrait(outfit, picture_folder, kind, false);
+    }
+
+    fn start_outfit_portrait(&mut self, outfit: Uuid, picture_folder: Uuid, kind: Kind, batch: bool) {
         if self
             .outfit_portrait
             .as_ref()
-            .is_some_and(|s| s.outfit == outfit && s.kind == kind && !s.over)
+            .is_some_and(|s| s.outfit == outfit && s.picture_folder == picture_folder && s.kind == kind && !s.over)
         {
             return;
         }
@@ -191,6 +205,7 @@ impl App {
         log::info!("outfit portrait: opened for {outfit} ({kind:?})");
         self.outfit_portrait = Some(Session {
             outfit,
+            picture_folder,
             kind,
             settings,
             camera: self.camera.clone(),
@@ -557,13 +572,13 @@ impl App {
             }
             return;
         }
-        let (outfit, save_local, size, pixels) = {
+        let (picture_folder, save_local, size, pixels) = {
             let s = self.outfit_portrait.as_ref().expect("portrait checked above");
             let shot = s.shot.as_ref().expect("shot checked above");
-            (s.outfit, s.settings.hd_local, shot.size, shot.pixels.clone())
+            (s.picture_folder, s.settings.hd_local, shot.size, shot.pixels.clone())
         };
         if save_local {
-            let path = portrait::local_image_path(self.world.agent_id, outfit);
+            let path = portrait::local_image_path(self.world.agent_id, picture_folder);
             let Some(image) = image::RgbaImage::from_raw(size.0, size.1, pixels) else {
                 self.appearance_ui.message = aurora_i18n::tr!("ui-appearance-portrait-hd-local-error", reason = "photo pixels").to_owned();
                 return;
@@ -584,8 +599,8 @@ impl App {
                     aurora_i18n::tr!("ui-appearance-portrait-hd-local-error", reason = error.to_string()).to_owned();
                 return;
             }
-            self.appearance_ui.local_hd_checked.remove(&outfit);
-            self.appearance_ui.wanted_local_hd.insert(outfit);
+            self.appearance_ui.local_hd_checked.remove(&picture_folder);
+            self.appearance_ui.wanted_local_hd.insert(picture_folder);
         }
         let Some(s) = &mut self.outfit_portrait else {
             return;
@@ -595,13 +610,13 @@ impl App {
             return;
         };
         let hd_pixels = hd.map(|_| shot.pixels.clone());
-        if !self.outfit_photo_pixels(outfit, shot.size, shot.pixels) {
+        if !self.outfit_photo_pixels(picture_folder, shot.size, shot.pixels) {
             return;
         }
         if let (Some(cost), Some(pixels)) = (hd, hd_pixels) {
-            self.outfit_hd_start(outfit, shot.size, pixels, dimensions, cost, false);
+            self.outfit_hd_start(picture_folder, shot.size, pixels, dimensions, cost, false);
         }
-        log::info!("outfit portrait: photo used for {outfit}");
+        log::info!("outfit portrait: photo used for {picture_folder}");
         if let Some(s) = &mut self.outfit_portrait {
             s.saved = true;
         }
@@ -611,21 +626,21 @@ impl App {
     fn outfit_portrait_view(&self) -> Option<window::View<'_>> {
         let s = self.outfit_portrait.as_ref()?;
         let inv = &self.world.inventory;
-        let name = inv.folders.get(&s.outfit).map_or("", |f| f.info.name.as_str());
+        let name = inv.folders.get(&s.picture_folder).map_or("", |f| f.info.name.as_str());
         let bases = &self.appearance_ui.base_sets.data.folders;
-        let image = crate::world::appearance::outfit_image(inv, s.outfit);
+        let image = crate::world::appearance::outfit_image(inv, s.picture_folder);
         let hd = window::HdView {
             offer: self.outfit_hd_offer_dimensions(s.settings.ratio.dimensions(s.settings.hd_side.side())),
             busy: self.outfit_hd_busy(),
             confirm: s.hd_confirm,
-            has_one: !crate::world::appearance::hd_pictures(inv, s.outfit).is_empty(),
+            has_one: !crate::world::appearance::hd_pictures(inv, s.picture_folder).is_empty(),
         };
         Some(window::View {
             name,
             preview: s.preview.as_ref(),
             shot: s.shot.as_ref().map(|shot| &shot.texture),
             current: self.ui_images.get(&image).filter(|_| !image.is_nil()),
-            worn: outfit_is_worn(inv, s.outfit, bases),
+            worn: outfit_is_worn(inv, s.outfit, bases, &self.appearance_ui.variant_selections),
             previous: s
                 .previous
                 .map(|p| p.and_then(|id| inv.folders.get(&id)).map(|f| f.info.name.as_str())),
@@ -701,6 +716,7 @@ impl App {
             return;
         };
         let outfit = s.outfit;
+        let picture_folder = s.picture_folder;
         match action {
             window::Action::Shoot => self.outfit_portrait_shoot(),
             window::Action::Use => self.outfit_portrait_use(None),
@@ -754,7 +770,7 @@ impl App {
                 self.end_outfit_portrait_photo();
                 self.outfit_portrait = None;
                 self.settings.outfit_portrait = settings;
-                self.open_outfit_portrait(outfit, Kind::Viewfinder);
+                self.open_outfit_portrait_targets(outfit, picture_folder, Kind::Viewfinder);
                 if let Some(s) = &mut self.outfit_portrait {
                     s.previous = previous;
                     s.previous_base = previous_base;
@@ -849,6 +865,7 @@ impl App {
         match &mut self.outfit_portrait {
             Some(s) if s.batch && !s.over => {
                 s.outfit = outfit;
+                s.picture_folder = outfit;
                 s.settings = settings;
                 s.framed = None;
                 s.pose = None;
@@ -860,7 +877,7 @@ impl App {
                 if self.outfit_portrait.is_some() {
                     self.close_outfit_portrait();
                 }
-                self.start_outfit_portrait(outfit, Kind::Studio, true);
+                self.start_outfit_portrait(outfit, outfit, Kind::Studio, true);
                 if let Some(s) = &mut self.outfit_portrait {
                     s.settings = settings;
                 }

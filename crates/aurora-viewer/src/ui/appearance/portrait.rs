@@ -170,9 +170,6 @@ fn frame_size(available: Vec2, aspect: f32) -> Vec2 {
 pub(super) fn choices_ui(ui: &mut egui::Ui, p: &Palette, s: &mut PortraitSettings) -> Vec<Action> {
     let mut actions = Vec::new();
     saved_arrangements(ui, p, s, &mut actions);
-    if widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-reset-camera")).clicked() {
-        actions.push(Action::ResetCamera);
-    }
     choice(
         ui,
         p,
@@ -264,10 +261,15 @@ fn saved_arrangements(ui: &mut egui::Ui, p: &Palette, s: &PortraitSettings, acti
     let selected = s
         .selected_arrangement
         .filter(|&i| s.arrangements.get(i).is_some_and(Option::is_some));
+    let new_label = aurora_i18n::tr!("ui-appearance-portrait-new-arrangement");
+    let font = widgets::control_font(ui, 12.0);
+    let label_width = ui.fonts_mut(|fonts| fonts.layout_no_wrap(new_label.to_owned(), font, p.ink).size().x);
+    let new_width = (label_width + 2.0 * ui.spacing().button_padding.x).max(ui.spacing().interact_size.x);
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
         egui::ComboBox::from_id_salt("outfit_portrait_saved_arrangements")
             .selected_text("")
-            .width(28.0)
+            .width(new_width)
             .show_ui(ui, |ui| {
                 for i in 0..s.arrangements.len() {
                     if let Some(name) = s.arrangement_name(i)
@@ -281,10 +283,13 @@ fn saved_arrangements(ui: &mut egui::Ui, p: &Palette, s: &PortraitSettings, acti
             let id = ui.scope_id().with(("portrait_arrangement_name", index));
             let stored = s.arrangement_name(index).unwrap_or_default();
             let mut name = ui.ctx().data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| stored.clone());
-            let field_width = (ui.available_width() - ui.spacing().item_spacing.x).max(60.0);
+            let field_width = ui.available_width().max(60.0);
             let response = ui.add_sized(
                 Vec2::new(field_width, 28.0),
-                egui::TextEdit::singleline(&mut name).id(id).char_limit(32),
+                egui::TextEdit::singleline(&mut name)
+                    .id(id)
+                    .char_limit(32)
+                    .align(egui::Align2::CENTER_CENTER),
             );
             if response.lost_focus() {
                 if name.trim() != stored {
@@ -297,24 +302,26 @@ fn saved_arrangements(ui: &mut egui::Ui, p: &Palette, s: &PortraitSettings, acti
                 ui.ctx().data_mut(|d| d.remove::<String>(id));
             }
         } else {
-            let field_width = (ui.available_width() - ui.spacing().item_spacing.x).max(60.0);
+            let field_width = ui.available_width().max(60.0);
             ui.add_enabled_ui(false, |ui| {
                 ui.add_sized(
                     Vec2::new(field_width, 28.0),
-                    egui::TextEdit::singleline(&mut aurora_i18n::tr!("ui-appearance-portrait-no-arrangement").to_string()),
+                    egui::TextEdit::singleline(&mut aurora_i18n::tr!("ui-appearance-portrait-no-arrangement").to_string())
+                        .align(egui::Align2::CENTER_CENTER),
                 );
             });
         }
     });
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.add_enabled_ui(s.arrangements.iter().any(Option::is_none), |ui| {
+            if widgets::flat_button_sized(ui, p, new_label, Vec2::new(new_width, ui.spacing().interact_size.y)).clicked() {
+                actions.push(Action::NewArrangement);
+            }
+        });
         ui.add_enabled_ui(selected.is_some(), |ui| {
             if widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-save-arrangement")).clicked() {
                 actions.push(Action::SaveArrangement);
-            }
-        });
-        ui.add_enabled_ui(s.arrangements.iter().any(Option::is_none), |ui| {
-            if widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-new-arrangement")).clicked() {
-                actions.push(Action::NewArrangement);
             }
         });
         ui.add_enabled_ui(selected.is_some(), |ui| {
@@ -322,6 +329,9 @@ fn saved_arrangements(ui: &mut egui::Ui, p: &Palette, s: &PortraitSettings, acti
                 actions.push(Action::DeleteArrangement);
             }
         });
+        if widgets::flat_button(ui, p, aurora_i18n::tr!("ui-appearance-portrait-reset-camera")).clicked() {
+            actions.push(Action::ResetCamera);
+        }
     });
 }
 
