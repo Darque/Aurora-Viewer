@@ -586,6 +586,9 @@ pub struct InventoryUi {
     pub expand_all: Option<bool>,
     pub selected: Option<Uuid>,
     rename: Option<InlineRename>,
+    /// Variant names were committed in Appearance, so skip the inventory's
+    /// automatic inline rename after the server confirms those folders.
+    pub(crate) created_without_rename: HashSet<Uuid>,
     reveal: Option<Uuid>,
     reveal_path: HashSet<Uuid>,
     /// Where the plain list was last scrolled, and that place to go back to
@@ -852,14 +855,6 @@ impl InventoryUi {
         self.message.clear();
     }
 
-    /// End an inline rename when the same folder has just been created by
-    /// Appearance's variant dialog; that dialog already committed its name.
-    pub fn cancel_rename(&mut self, id: Uuid) {
-        if self.rename.as_ref().is_some_and(|edit| edit.id == id) {
-            self.rename = None;
-        }
-    }
-
     /// show_item_original: clear filters, expand ancestors, select and scroll to the original.
     pub fn show_original(&mut self, inv: &Inventory, id: Uuid) {
         self.show_original_in(inv, id, 0);
@@ -1090,8 +1085,6 @@ impl InventoryUi {
     }
 }
 
-use tree::folder_icon;
-
 /// II_FLAGS_OBJECT_HAS_MULTIPLE_ITEMS / LLInventoryIcon::getIconName
 /// (Firestorm indra/{llinventory,newview}, originally LGPL 2.1).
 pub const OBJECT_HAS_MULTIPLE_ITEMS: u32 = 0x200000;
@@ -1165,9 +1158,9 @@ pub(crate) fn inventory_item_icon(inv: &Inventory, it: &aurora_net::inventory::I
                 item_icon_color(target.asset_type, target.inv_type, p),
             );
         }
-        if let Some(folder) = inv.folders.get(&id) {
+        if inv.folders.contains_key(&id) {
             return (
-                super::icons::inventory_link_name(tree::folder_icon(folder.info.type_default, false)),
+                super::icons::inventory_link_name(tree::folder_icon_for(inv, id, false)),
                 p.violet_light,
             );
         }
@@ -1375,7 +1368,7 @@ fn folder_row(
             *open = !*open;
         }
         let tint = folder_colors::tint(prefs, id);
-        tree::icon(ui, icons, folder_icon(folder.info.type_default, *open), p, tint);
+        tree::icon(ui, icons, tree::folder_icon_for(inv, id, *open), p, tint);
         let label = match fetch_state {
             FetchState::Fetching => aurora_i18n::tr!("status-name-loading", name = name.to_string()),
             FetchState::Failed => aurora_i18n::tr!("ui-inventory-failed-2", name = name.to_string()),

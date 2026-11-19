@@ -428,11 +428,13 @@ pub(super) fn show(
     st.side.drawn.clear();
     let _out = area.show_rows(ui, ROW, rows.len(), |ui, range| {
         for row in &rows[range] {
-            let Some(folder) = inv.folders.get(&row.id) else { continue };
+            let Some(_folder) = inv.folders.get(&row.id) else { continue };
             let left = 4.0 + row.depth as f32 * INDENT + CARET + 4.0;
             let selected = st.tab == 0 && st.browse == row.id;
             let name = folder_name(inv, row.id);
-            let icon = match tree::folder_icon(folder.info.type_default, row.open) {
+            let icon_name = tree::folder_icon_for(inv, row.id, row.open);
+            let icon = match icon_name {
+                "Inv_Outfit" => "hanger-2-filled",
                 "Inv_TrashClosed" => "trash-filled",
                 "Inv_SuitcaseOpen" | "Inv_SuitcaseClosed" => "briefcase-filled",
                 "Inv_FolderOpen" => "folder-open-filled",

@@ -13,6 +13,7 @@ struct Fixture {
     actions: Vec<InvAction>,
     two_windows: bool,
     scrolling: Option<bool>,
+    earlier_cursor_feedback: Option<egui::CursorIcon>,
 }
 
 impl Fixture {
@@ -86,6 +87,7 @@ impl Fixture {
             actions: Vec::new(),
             two_windows: false,
             scrolling: None,
+            earlier_cursor_feedback: None,
         };
         f.settle();
         f
@@ -104,6 +106,9 @@ impl Fixture {
                 ..Default::default()
             },
             |ui| {
+                if let Some(cursor) = self.earlier_cursor_feedback {
+                    drag::feedback(ui.ctx(), cursor);
+                }
                 ui.horizontal_top(|ui| {
                     draw_tree(
                         ui,
@@ -307,6 +312,17 @@ fn inventory_drag_can_move_items_into_a_protected_folder() {
     assert_eq!(f.hover(to), egui::CursorIcon::Move);
     f.button(to, false, false);
     assert_eq!(f.actions.len(), 1);
+}
+
+#[test]
+fn a_valid_inventory_drop_overrides_a_broad_no_move_cursor_hint() {
+    let mut f = Fixture::new();
+    f.start(100);
+    f.earlier_cursor_feedback = Some(egui::CursorIcon::NotAllowed);
+    let to = f.row(20);
+    assert_eq!(f.hover(to), egui::CursorIcon::Move);
+    f.button(to, false, false);
+    assert_eq!(f.moved(), vec![(id(100), id(20))]);
 }
 
 #[test]

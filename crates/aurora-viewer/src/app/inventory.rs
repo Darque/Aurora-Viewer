@@ -3,8 +3,23 @@
 use super::*;
 use crate::ui::inventory::InvAction;
 use crate::world::inventory::actions as rules;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use uuid::Uuid;
+
+/// The inventory selects and starts renaming folders created in its window.
+/// A folder named in another dialog is already complete and must be skipped.
+fn created_folder_selection(change: &aurora_net::inventory::operations::Mutation, skip_rename: &mut HashSet<Uuid>) -> Option<Uuid> {
+    let mut selected = None;
+    for id in change.operations.iter().filter_map(|operation| match operation {
+        aurora_net::inventory::operations::Operation::Folder { id, .. } => Some(*id),
+        _ => None,
+    }) {
+        if !skip_rename.remove(&id) && selected.is_none() {
+            selected = Some(id);
+        }
+    }
+    selected
+}
 
 impl App {
     fn offer_feedback(&mut self, reason: crate::world::inventory::outgoing::Feedback) {
@@ -319,6 +334,7 @@ impl App {
         selection: Option<ui::inventory::DeleteSelection>,
         editor: Uuid,
     ) {
+        let created_selection = created_folder_selection(&change, &mut self.inventory_ui.created_without_rename);
         if self.inventory_ui.pending.is_some() {
             self.inventory_ui.consume_clipboard = false;
             return;
@@ -344,13 +360,7 @@ impl App {
         }
         self.inventory_ui.pending_refresh.clone_from(&change.refresh);
         let pane = self.inventory_pane(editor);
-        pane.created_selection = change.operations.iter().find_map(|op| {
-            if let aurora_net::inventory::operations::Operation::Folder { id, .. } = op {
-                Some(*id)
-            } else {
-                None
-            }
-        });
+        pane.created_selection = created_selection;
         pane.message.clear();
         self.send(NetCommand::EditInventory { request, change });
     }
@@ -1131,7 +1141,7 @@ impl App {
                 }
                 _ => None,
             }) {
-                self.inventory_ui.cancel_rename(id);
+                self.inventory_ui.created_without_rename.insert(id);
             }
             self.apply_inventory_action(crate::ui::inventory::InvAction::Edit(change));
             return;
@@ -1371,5 +1381,37 @@ mod tests {
         // an additional window's id is not the right pane's
         pane_of(&mut main, &mut dual, Uuid::from_u128(7)).message = "window".into();
         assert_eq!((main.message.as_str(), dual.message.as_str()), ("window", "dual"));
+    }
+
+    #[test]
+    fn named_variant_creation_skips_inventory_selection_and_inline_rename() {
+        use aurora_net::inventory::operations::{Mutation, Operation};
+
+        let first = Uuid::from_u128(100);
+        let second = Uuid::from_u128(200);
+        let folder = |id| Operation::Folder {
+            id,
+            parent: Uuid::from_u128(10),
+            name: "Variant".into(),
+            type_default: -1,
+        };
+        let change = Mutation {
+            operations: vec![folder(first), folder(second)],
+            ..Default::default()
+        };
+        let mut skipped = HashSet::from([first]);
+        let variant_change = Mutation {
+            operations: vec![folder(first)],
+            ..Default::default()
+        };
+        assert_eq!(created_folder_selection(&variant_change, &mut skipped), None);
+        assert!(skipped.is_empty(), "consume the skip marker with its request");
+
+        skipped.insert(first);
+        assert_eq!(created_folder_selection(&change, &mut skipped), Some(second));
+        assert!(skipped.is_empty(), "consume the skip marker with its request");
+
+        let mut no_skips = HashSet::new();
+        assert_eq!(created_folder_selection(&change, &mut no_skips), Some(first));
     }
 }

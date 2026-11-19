@@ -111,9 +111,27 @@ fn plan(
 struct Feedback {
     pass: u64,
     cursor: egui::CursorIcon,
+    /// A concrete inventory row has better information than a broad hover
+    /// target that only advertises a cursor. Higher priority wins this pass.
+    priority: u8,
 }
 fn feedback_id() -> egui::Id {
     egui::Id::unique("inventory_move_drag_feedback")
+}
+
+fn set_feedback(ctx: &egui::Context, cursor: egui::CursorIcon, priority: u8) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|data| {
+        let id = feedback_id();
+        if data
+            .get_temp::<Feedback>(id)
+            .is_some_and(|current| current.pass == pass && current.priority >= priority)
+        {
+            return false;
+        }
+        data.insert_temp(id, Feedback { pass, cursor, priority });
+        true
+    })
 }
 
 /// How many entries a drag of inventory carries while one is in progress (a
@@ -132,8 +150,7 @@ pub(crate) fn carried_ids(ctx: &egui::Context) -> Option<Vec<Uuid>> {
 /// The cursor a destination outside the inventory windows gives the cargo
 /// held over it this pass (an object's Contents tab).
 pub(crate) fn feedback(ctx: &egui::Context, cursor: egui::CursorIcon) {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| d.insert_temp(feedback_id(), Feedback { pass, cursor }));
+    set_feedback(ctx, cursor, 0);
 }
 
 /// The cargo of `AURORA_DEMO_CONV_GIVE`: one item, or a selection of several.
@@ -160,16 +177,7 @@ pub(crate) fn give_target_on(ctx: &egui::Context, layer: egui::LayerId, zone: eg
         return None;
     }
     let cargo = Cargo::carried(ctx)?;
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| {
-        d.insert_temp(
-            feedback_id(),
-            Feedback {
-                pass,
-                cursor: egui::CursorIcon::Copy,
-            },
-        )
-    });
+    set_feedback(ctx, egui::CursorIcon::Copy, 2);
     let released = ctx.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
     if released {
         egui::DragAndDrop::clear_payload(ctx);
@@ -192,27 +200,23 @@ pub(super) fn target(
 ) {
     let Some(cargo) = Cargo::hover(ui, r) else { return };
     let pass = ui.ctx().cumulative_pass_nr();
-    if ui
-        .ctx()
-        .data(|d| d.get_temp::<Feedback>(feedback_id()).is_some_and(|f| f.pass == pass))
-    {
+    if ui.ctx().data(|d| {
+        d.get_temp::<Feedback>(feedback_id())
+            .is_some_and(|f| f.pass == pass && f.priority >= 1)
+    }) {
         return;
     }
     let plan = plan(ui.ctx(), inv, cargo.ids(), to, prefs, facts);
     let allowed = st.pending.is_none() && plan.as_ref().as_ref().is_ok_and(|p| !p.operations.is_empty());
-    ui.ctx().data_mut(|d| {
-        d.insert_temp(
-            feedback_id(),
-            Feedback {
-                pass,
-                cursor: if allowed {
-                    egui::CursorIcon::Move
-                } else {
-                    egui::CursorIcon::NotAllowed
-                },
-            },
-        );
-    });
+    set_feedback(
+        ui.ctx(),
+        if allowed {
+            egui::CursorIcon::Move
+        } else {
+            egui::CursorIcon::NotAllowed
+        },
+        1,
+    );
     tree::drop_outline(ui, p, r.rect, allowed);
     if ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary)) {
         egui::DragAndDrop::clear_payload(ui.ctx());
@@ -242,7 +246,7 @@ pub(crate) fn cursor(ctx: &egui::Context) -> Option<egui::CursorIcon> {
     ctx.data(|d| d.get_temp::<Feedback>(feedback_id()))
         .filter(|f| f.pass == pass)
         .map(|f| f.cursor)
-        .or_else(|| egui::DragAndDrop::has_payload_of_type::<SelectionDrag>(ctx).then_some(egui::CursorIcon::NotAllowed))
+        .or_else(|| Cargo::carried(ctx).map(|_| egui::CursorIcon::NotAllowed))
 }
 
 pub(crate) fn badge(ctx: &egui::Context, p: &Palette) {

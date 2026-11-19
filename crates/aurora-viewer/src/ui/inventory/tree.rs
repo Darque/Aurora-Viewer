@@ -37,11 +37,26 @@ pub fn folder_icon(type_default: i32, open: bool) -> &'static str {
     }
 }
 
+/// A typed outfit is shown with a hanger so it stands apart from ordinary
+/// folders throughout Inventory, including folder pickers and previews.
+pub fn folder_icon_for(inv: &super::Inventory, id: uuid::Uuid, open: bool) -> &'static str {
+    let type_default = inv.folders.get(&id).map_or(-1, |folder| folder.info.type_default);
+    if type_default == crate::world::appearance::FT_OUTFIT {
+        "Inv_Outfit"
+    } else {
+        folder_icon(type_default, open)
+    }
+}
+
 /// The type icon of a row: folders in the light accent, items in ink, or
 /// `tint` when given (a state the row shows by its icon).
 pub fn icon(ui: &mut egui::Ui, icons: &Icons, name: &str, p: &Palette, tint: Option<egui::Color32>) {
     if let Some(t) = icons.get(name) {
-        let tint = tint.unwrap_or(if name.starts_with("Inv_Folder") { p.violet_light } else { p.ink });
+        let tint = tint.unwrap_or(if name.starts_with("Inv_Folder") || name == "Inv_Outfit" {
+            p.violet_light
+        } else {
+            p.ink
+        });
         ui.add(egui::Image::new(t).fit_to_exact_size(Vec2::splat(16.0)).tint(tint));
     } else {
         ui.add_space(16.0);

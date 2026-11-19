@@ -539,6 +539,7 @@ const ALIASES: &[(&str, &str)] = &[
     ("Stop_Off", "player-stop-filled"),
     ("Inv_FolderClosed", "folder-filled"),
     ("Inv_FolderOpen", "folder-open-filled"),
+    ("Inv_Outfit", "hanger-2-filled"),
     ("Inv_Object", "box"),
     ("Inv_Object_Multi", "packages"),
     ("Inv_Texture", "photo-filled"),

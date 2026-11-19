@@ -11124,7 +11124,10 @@ gallery's double-click continues to open the outfit's contents.
   At frame 600 the inventory's Remove from current outfit takes it off
   (#1849): the jacket, pants and mesh hair leave the Worn tab, the body
   parts and the other attachments stay, and no "This outfit folder cannot
-  be modified" message shows. Capture at frame 720 or later.
+  be modified" message shows. Also wear an outfit linked to a base, then
+  take it off: items supplied by that linked base leave the Current Outfit
+  even when the base also references them; required body parts and unrelated
+  attachments remain. Capture at frame 720 or later.
 - `layers`: the outfit editor with three worn tattoos, listed furthest
   from the body first as in the Legacy Viewer: Lipstick, Freckles, Star.
   A tattoo row drags within the tattoos (a violet marker shows where it
@@ -11290,6 +11293,13 @@ folder, subfolder, outfits, objects, documents, texture, sound, gesture,
 sky, material, link and varied permissions; library in the tree,
 root open and labels aligned left. Creations and mutations simulated
 offline; the files and snapshots uploaded in demo stay offline.
+
+In either inventory layout, typed outfit folders use the hanger icon and
+ordinary folders keep the folder icon. Create an outfit variant from its
+Appearance menu, enter its name, and verify the new Inventory row is neither
+selected nor left in inline rename. Drag a permitted item or folder over a
+valid Inventory destination row: the row's move cursor must override a broad
+no-move hint, and dropping moves the original entry.
 
 In both layouts, give Inventory and Recent different type, permission and date
 filters, then switch back and forth with the finder open: its controls and

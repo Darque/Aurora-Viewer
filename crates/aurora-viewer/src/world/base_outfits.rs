@@ -247,6 +247,27 @@ pub fn linked_bases(inv: &Inventory, outfit: Uuid, known: &HashSet<Uuid>) -> Vec
         .collect()
 }
 
+/// Items supplied by an outfit itself and by any bases linked from it.
+/// Required body parts remain worn when an outfit is taken off.
+fn takeoff_items(inv: &Inventory, outfit: Uuid, bases: &HashSet<Uuid>) -> Result<HashSet<Uuid>, String> {
+    let mut items: HashSet<_> = appearance::wearable_contents(inv, outfit)?
+        .into_iter()
+        .filter(|link| !link.folder)
+        .map(|link| link.target)
+        .collect();
+    for base in linked_bases(inv, outfit, bases) {
+        items.extend(
+            resolve_for_wear(inv, base)
+                .map_err(error_text)?
+                .links
+                .into_iter()
+                .map(|link| link.target),
+        );
+    }
+    items.retain(|id| body_slot(inv, *id).is_none());
+    Ok(items)
+}
+
 pub fn linked_names(inv: &Inventory, outfit: Uuid, known: &HashSet<Uuid>) -> Option<String> {
     let names: Vec<_> = linked_bases(inv, outfit, known)
         .into_iter()
@@ -848,27 +869,53 @@ pub fn plan(
                     })
                     .unwrap_or_default()
             };
-            let removed = match &action {
-                Action::RemoveOutfit(id) => vec![*id],
-                Action::RemoveOutfits(ids) => ids.clone(),
-                _ => Vec::new(),
+            let mut updated = active.clone();
+            let removed_items: HashSet<_> = match &action {
+                Action::RemoveOutfit(id) => takeoff_items(inv, *id, &saved.folders)?,
+                Action::RemoveOutfits(ids) => {
+                    let mut items = HashSet::new();
+                    for id in ids {
+                        items.extend(takeoff_items(inv, *id, &saved.folders)?);
+                    }
+                    items
+                }
+                _ => HashSet::new(),
             };
-            for id in removed {
-                let links = if inv
-                    .folders
-                    .get(&id)
-                    .is_some_and(|folder| folder.info.type_default == appearance::FT_OUTFIT)
-                    && super::outfit_folders::variants(inv, id).is_empty()
-                {
-                    appearance::usable_links(inv, id)
+            if !removed_items.is_empty() {
+                let links = if change.folder == cof {
+                    Some(&mut change.links)
                 } else {
-                    appearance::wearable_contents(inv, id)?
+                    change.cof.as_mut().filter(|(id, _)| *id == cof).map(|(_, links)| links)
                 };
-                for link in links.into_iter().filter(|link| !link.folder) {
-                    clothing.remove(&link.target);
+                if let Some(links) = links {
+                    links.retain(|link| link.folder || !removed_items.contains(&link.target));
                 }
             }
-            let mut updated = active.clone();
+            let next_links = if change.folder == cof {
+                Some(change.links.as_slice())
+            } else {
+                change.cof.as_ref().filter(|(id, _)| *id == cof).map(|(_, links)| links.as_slice())
+            };
+            let removed_from_cof: HashSet<_> = if matches!(action, Action::RemoveOutfit(_) | Action::RemoveOutfits(_)) {
+                let next: HashSet<_> = next_links
+                    .into_iter()
+                    .flatten()
+                    .filter(|link| !link.folder)
+                    .map(|link| link.target)
+                    .collect();
+                appearance::folder_links(inv, cof)
+                    .into_iter()
+                    .filter(|link| !link.folder && !next.contains(&link.target))
+                    .map(|link| link.target)
+                    .collect()
+            } else {
+                HashSet::new()
+            };
+            // A selected outfit's items are removed even when the active base
+            // also references them. Keep unrelated base items and required
+            // body parts, then preserve only the remaining confirmed base.
+            updated.retain_items(|id| !removed_from_cof.contains(id));
+            clothing.retain(|id| !removed_from_cof.contains(id));
             for member in updated.members.values_mut() {
                 member.exclusive = member.items.difference(&clothing).copied().collect();
             }
@@ -884,7 +931,7 @@ pub fn plan(
                 change.cof.as_mut().filter(|(id, _)| *id == cof).map(|(_, links)| links)
             };
             if let Some(links) = links {
-                preserve(inv, &current, links, active);
+                preserve(inv, &current, links, &updated);
                 appearance::drop_coalesced(inv, links);
                 appearance::normalize_layers(inv, links);
                 check_limits(inv, links)?;
@@ -1314,7 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn taking_off_shared_clothing_makes_the_shared_item_base_only() {
+    fn taking_off_shared_clothing_removes_it_from_the_outfit_and_active_base() {
         let mut inv = inventory();
         let mut saved = super::seed_demo(&mut inv, id(1));
         let mut clothes = folder_links(&inv, id(705));
@@ -1324,8 +1371,9 @@ mod tests {
         let (change, _, active) =
             plan(&inv, appearance::Action::RemoveOutfit(id(705)), &HashMap::new(), &saved).expect("take off clothing");
         let active = active.expect("updated base");
-        assert!(active.exclusive.contains(&id(714)));
-        assert!(change.links.iter().any(|link| !link.folder && link.target == id(714)));
+        assert!(!active.items.contains(&id(714)));
+        assert!(!active.exclusive.contains(&id(714)));
+        assert!(!change.links.iter().any(|link| !link.folder && link.target == id(714)));
         appearance::demo_mutate(&mut inv, id(1), &change).expect("apply");
         saved.active = Some(active);
         let (change, _, _) = plan(&inv, appearance::Action::WearBase(id(703)), &HashMap::new(), &saved).expect("swap base");
@@ -1342,6 +1390,23 @@ mod tests {
             assert!(targets.contains(&id(item)), "missing base item {item}");
         }
         assert!(!targets.contains(&id(715)));
+    }
+
+    #[test]
+    fn taking_off_an_outfit_removes_its_linked_base_items_but_keeps_body_parts() {
+        let mut inv = inventory();
+        let mut saved = super::seed_demo(&mut inv, id(1));
+        let (wear, _, active) = plan(&inv, appearance::Action::Wear(id(704), false), &HashMap::new(), &saved).expect("wear linked outfit");
+        appearance::demo_mutate(&mut inv, id(1), &wear).expect("wear outfit");
+        saved.active = active;
+
+        let (takeoff, _, active) = plan(&inv, appearance::Action::RemoveOutfit(id(704)), &HashMap::new(), &saved).expect("take off outfit");
+        let targets: HashSet<_> = takeoff.links.iter().filter(|link| !link.folder).map(|link| link.target).collect();
+        for body_part in [730, 731, 732, 733] {
+            assert!(targets.contains(&id(body_part)), "required base body part {body_part} stays worn");
+        }
+        assert!(!targets.contains(&id(723)), "a wearable supplied by the linked base is removed");
+        assert!(!active.expect("remaining base").items.contains(&id(723)));
     }
 
     #[test]

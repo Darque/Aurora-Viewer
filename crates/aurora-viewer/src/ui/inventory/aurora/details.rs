@@ -183,9 +183,8 @@ fn picture(
     ui.painter().rect_filled(rect, ui.visuals().window_corner_radius, p.panel);
     let (icon, tint) = inv.items.get(&id).map_or_else(
         || {
-            let kind = inv.folders.get(&id).map_or(-1, |f| f.info.type_default);
             (
-                tree::folder_icon(kind, false),
+                tree::folder_icon_for(inv, id, false),
                 folder_colors::tint(prefs, id).unwrap_or(p.muted_dim),
             )
         },
