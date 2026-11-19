@@ -20,7 +20,8 @@ excluded. The same behavior applies to base outfits.
 
 Gallery cards show a variant count badge. Hovering a card replaces the badge
 with its Wear action; outfits with variants have a Wear menu that lets you
-choose which variant to wear. For a single child, the menu also offers
+choose which variant to wear. The menu stays open as the pointer moves from
+the Wear button to an option. For a single child, the menu also offers
 **Main outfit**.
 
 When an outfit is expanded in the **Outfits** or **Base outfits** list, its
@@ -31,8 +32,18 @@ to add links to that variation. Double-clicking a folder or object name in
 Inventory starts inline rename; right-click menus also offer Rename. Dragging
 a link from another outfit moves that link into the variation; dragging an
 ordinary inventory item leaves the original in place and adds an outfit link.
-The variant folder is also available in Inventory, where it accepts wearable
-items through the same outfit-link rules.
+Creating a variant commits the name in the dialog and leaves the Inventory
+tree out of rename mode. The variant folder is also available in Inventory,
+where it accepts wearable items through the same outfit-link rules.
+
+Use **New outfit** beside the gear button at the bottom of Appearance to
+create an outfit directly in **My Outfits**. The name is editable before
+creation; a leading period marks a reusable base outfit, and duplicate names
+get a number suffix. A plain empty folder created under **My Outfits** in
+Inventory also becomes an outfit when the first wearable is dropped into it.
+After folders have loaded, empty groups are hidden from the Base outfits and
+Outfits lists. A group with base outfits appears in Base outfits, a group with
+regular outfits appears in Outfits, and a group with both appears in both.
 
 This is experimental sandbox behavior and may change as the viewer source
 advances.

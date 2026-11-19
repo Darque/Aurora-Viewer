@@ -595,6 +595,56 @@ pub(super) fn dialogs(ctx: &egui::Context, p: &Palette, world: &mut World, st: &
         });
         st.variant_dialog = if close || response.should_close() { None } else { Some(dialog) };
     }
+    if let Some(mut name) = st.new_outfit.clone() {
+        let mut close = false;
+        let response = crate::ui::widgets::Modal::new(egui::Id::unique("appearance_new_outfit")).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.label(RichText::new(aurora_i18n::tr!("ui-appearance-new-outfit")).size(17.0).color(p.ink));
+            ui.add_space(8.0);
+            let r =
+                crate::ui::widgets::restricted_text_field(ui, true, &mut name, crate::ui::widgets::TextPolicy::PrintableNoPipe, |b, _| {
+                    egui::TextEdit::singleline(b).char_limit(63).desired_width(f32::INFINITY)
+                });
+            if st.new_outfit_select_name {
+                r.request_focus();
+                if let Some(mut state) = egui::TextEdit::load_state(ctx, r.id) {
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(name.chars().count()),
+                    )));
+                    state.store(ctx, r.id);
+                }
+                st.new_outfit_select_name = false;
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                use widgets::{ActionKind, action_button, action_button_if};
+                let valid = !name.trim().is_empty() && st.pending.is_none();
+                let size = egui::Vec2::new(0.0, 26.0);
+                if action_button_if(ui, p, "check", aurora_i18n::tr!("common-save"), ActionKind::Primary, size, valid).clicked()
+                    || (valid && crate::ui::widgets::enter_pressed(ui))
+                {
+                    let result = crate::world::outfit_folders::my_outfits(&world.inventory)
+                        .ok_or_else(|| aurora_i18n::tr!("world-outfit-folders-cannot-move-here").to_string())
+                        .and_then(|parent| crate::world::outfit_folders::create_outfit_named(&world.inventory, parent, &name));
+                    match result {
+                        Ok((id, change)) => {
+                            st.outfit_selection.single(id);
+                            st.reveal_outfit = Some(id);
+                            st.message.clear();
+                            actions.push(Action::Folders(change));
+                            close = true;
+                        }
+                        Err(reason) => st.message = reason,
+                    }
+                }
+                if action_button(ui, p, "x", aurora_i18n::tr!("common-cancel"), ActionKind::Flat, size).clicked() {
+                    close = true;
+                }
+            });
+        });
+        st.new_outfit = if close || response.should_close() { None } else { Some(name) };
+    }
     if let Some((id, mut name)) = st.gallery.rename.clone() {
         let mut close = false;
         let response = crate::ui::widgets::Modal::new(egui::Id::unique("outfit_rename")).show(ctx, |ui| {

@@ -135,6 +135,54 @@ pub fn create_variant_named(inv: &Inventory, outfit: Uuid, name: &str) -> Result
     Ok((*id, change))
 }
 
+/// Create a named outfit under My Outfits or one of its groups. A leading
+/// period remains part of the name because it marks a reusable base outfit.
+pub fn create_outfit_named(inv: &Inventory, parent: Uuid, name: &str) -> Result<(Uuid, Mutation), String> {
+    let Some(parent_depth) = depth(inv, parent) else {
+        return Err(aurora_i18n::tr!("world-outfit-folders-cannot-move-here").into());
+    };
+    if parent_depth >= MAX_DEPTH {
+        return Err(aurora_i18n::tr!("world-outfit-folders-too-deep").into());
+    }
+    if !actions::mutable(inv, parent) {
+        return Err(aurora_i18n::tr!("world-inventory-actions-this-folder-cannot-receive-the-selection").into());
+    }
+    let base_name = actions::clean_name(name)?;
+    let taken: std::collections::HashSet<_> = inv
+        .folders
+        .get(&parent)
+        .into_iter()
+        .flat_map(|folder| &folder.children)
+        .filter_map(|id| inv.folders.get(id))
+        .filter(|folder| folder.info.parent == parent)
+        .map(|folder| folder.info.name.to_lowercase())
+        .collect();
+    let name = if !taken.contains(&base_name.to_lowercase()) {
+        base_name
+    } else {
+        (2..)
+            .map(|number| {
+                let suffix = format!(" {number}");
+                let stem: String = base_name.chars().take(63usize.saturating_sub(suffix.chars().count())).collect();
+                format!("{stem}{suffix}")
+            })
+            .find(|candidate| !taken.contains(&candidate.to_lowercase()))
+            .ok_or_else(|| aurora_i18n::tr!("world-outfit-folders-already-there"))?
+    };
+    let id = Uuid::new_v4();
+    let change = Mutation {
+        operations: vec![Operation::Folder {
+            id,
+            parent,
+            name,
+            type_default: FT_OUTFIT,
+        }],
+        refresh: vec![parent, id],
+        ..Default::default()
+    };
+    Ok((id, change))
+}
+
 /// Rename one of an outfit's variant folders, keeping sibling names unique.
 pub fn rename_variant(inv: &Inventory, variant: Uuid, name: &str) -> Result<Mutation, String> {
     let outfit = variant_parent(inv, variant).ok_or(aurora_i18n::tr!("common-folder-not-found"))?;
@@ -896,6 +944,30 @@ mod tests {
         assert!(matches!(
             moved.operations.as_slice(),
             [Operation::Patch { id, folder: false, body }] if *id == outfit_link && body["parent_id"].as_uuid() == variant
+        ));
+    }
+
+    #[test]
+    fn a_new_outfit_is_typed_and_keeps_the_period_base_marker() {
+        let mut inv = demo();
+        let my = my_outfits(&inv).expect("My Outfits");
+        let (new, change) = create_outfit_named(&inv, my, ".Everyday").expect("new outfit");
+        assert!(matches!(
+            change.operations.as_slice(),
+            [Operation::Folder { id, parent, name, type_default }]
+                if *id == new && *parent == my && name == ".Everyday" && *type_default == FT_OUTFIT
+        ));
+        inv.created_folders(vec![aurora_net::inventory::InvFolder {
+            id: new,
+            parent: my,
+            name: ".Everyday".into(),
+            type_default: FT_OUTFIT,
+            version: 1,
+            ..Default::default()
+        }]);
+        assert!(matches!(
+            create_outfit_named(&inv, my, ".Everyday").expect("duplicate name gets a suffix").1.operations.as_slice(),
+            [Operation::Folder { name, .. }] if name == ".Everyday 2"
         ));
     }
 

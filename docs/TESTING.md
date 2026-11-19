@@ -10961,6 +10961,24 @@ gallery's double-click continues to open the outfit's contents.
   keep the accordion list and show this same preview beside it in a wide
   window. The Folders heading has a plus icon at its right edge; it
   opens New folder without taking a row from the folder list.
+- `outfit variants` (manual, offline demo): in a demo outfit, create variants
+  from the preview or thumbnail menu and confirm the name dialog commits the
+  variant without leaving an Inventory rename editor active. In the expanded
+  Outfits and Base outfits lists, check the variant label against its outfit
+  header: both use the same button text size and weight, and only the current
+  outfit is bold. Create a single variant and verify its selector and Wear menu
+  offer **Main outfit**; create a second and verify both names are offered.
+  Move the pointer from a gallery card's Wear button to an option and confirm
+  the menu remains open until the option is clicked. Verify the selected child
+  supplies the thumbnail and only its items are worn with the parent's items.
+  Drag a wearable from Inventory to a plain empty folder under **My Outfits**;
+  it should become an outfit and receive an outfit link, leaving the source
+  item in place. Drag an existing outfit link to a variant and confirm it moves.
+  Make a group with only dot-prefixed outfits, only regular outfits, both, and
+  neither: it should appear in Base outfits, Outfits, both, and neither tab
+  respectively after folder contents finish loading. The **New outfit** button
+  beside the Appearance gear should create a uniquely named outfit; a leading
+  period marks it as a base.
 - `portrait`, `portrait-base`, `portrait-not-worn`, `portrait-shot`, `portrait-bust`,
   `portrait-face`, `portrait-profile`, `portrait-ratio-portrait`,
   `photo-mode`: the showcase, then at

@@ -59,6 +59,9 @@ pub struct AppearanceUi {
     pub variant_selections: HashMap<Uuid, Uuid>,
     /// Naming dialog for adding or renaming one of an outfit's variants.
     pub(super) variant_dialog: Option<VariantDialog>,
+    /// Naming dialog for a new outfit created from the Appearance window.
+    new_outfit: Option<String>,
+    new_outfit_select_name: bool,
     /// The gallery tab as Aurora's showcase (`showcase.rs`) rather than the
     /// Legacy Viewer's tiles: the app sets it from Preferences › Aurora.
     pub showcase: bool,
@@ -225,6 +228,43 @@ struct Shown {
     outfits: Vec<Uuid>,
     /// The outfits matching the filter, those of closed groups included.
     total: usize,
+}
+
+/// Keep a group in the Base outfits or Outfits tab only when it has a
+/// matching descendant outfit. A folder still being fetched stays visible
+/// until its contents can be classified.
+fn category_tree(inv: &crate::world::inventory::Inventory, entries: Vec<Entry>, base_ids: &HashSet<Uuid>, bases: bool) -> Vec<Entry> {
+    let mut keep = vec![false; entries.len()];
+    let mut counts = vec![0usize; entries.len()];
+    let mut groups = Vec::<usize>::new();
+    for (index, entry) in entries.iter().enumerate() {
+        while groups.last().is_some_and(|parent| entries[*parent].depth >= entry.depth) {
+            groups.pop();
+        }
+        if entry.group {
+            keep[index] = inv
+                .folders
+                .get(&entry.id)
+                .is_none_or(|folder| folder.state != crate::world::inventory::FetchState::Fetched);
+            groups.push(index);
+        } else if base_ids.contains(&entry.id) == bases {
+            keep[index] = true;
+            for group in &groups {
+                counts[*group] += 1;
+            }
+        }
+    }
+    entries
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, mut entry)| {
+            if entry.group {
+                entry.outfits = counts[index];
+                keep[index] |= counts[index] > 0;
+            }
+            keep[index].then_some(entry)
+        })
+        .collect()
 }
 
 impl AppearanceUi {
@@ -681,12 +721,9 @@ impl AppearanceUi {
             let needle = self.search.trim().to_lowercase();
             let mut tree = tree(inv, &needle, self.reverse_sort, order);
             if self.tab == TAB_BASES {
-                tree.retain(|entry| !entry.group && self.base_sets.data.folders.contains(&entry.id));
-                for entry in &mut tree {
-                    entry.depth = 0;
-                }
+                tree = category_tree(inv, tree, &self.base_sets.data.folders, true);
             } else if self.tab == TAB_OUTFITS {
-                tree.retain(|entry| entry.group || !self.base_sets.data.folders.contains(&entry.id));
+                tree = category_tree(inv, tree, &self.base_sets.data.folders, false);
             }
             let total = tree.iter().filter(|e| !e.group).count();
             let mut entries = Vec::with_capacity(tree.len());
@@ -939,12 +976,16 @@ fn variant_row(
     ui.painter()
         .galley(egui::pos2(count_left, rect.center().y - count.size().y / 2.0), count, p.muted);
     let text_left = rect.left() + 25.0;
-    let mut job = egui::text::LayoutJob::single_section(
-        folder.info.name.clone(),
-        egui::TextFormat::simple(egui::FontId::proportional(12.0), if selected { p.violet_light } else { p.ink }),
+    let color = if selected { p.violet_light } else { p.ink };
+    let current = model::base(&world.inventory) == Some(outfit);
+    let galley = outfit_label(
+        ui,
+        &folder.info.name,
+        current,
+        egui::TextStyle::Button.resolve(ui.style()),
+        color,
+        (count_left - text_left - 6.0).max(1.0),
     );
-    job.wrap = egui::text::TextWrapping::truncate_at_width((count_left - text_left - 6.0).max(1.0));
-    let galley = ui.painter().layout_job(job);
     let name_hit = egui::Rect::from_x_y_ranges(text_left..=(text_left + galley.size().x).min(count_left - 6.0), rect.y_range());
     ui.painter().galley(
         egui::pos2(text_left, rect.center().y - galley.size().y / 2.0),
@@ -1032,7 +1073,7 @@ fn variant_drop_target(
     let Some(ids) = crate::ui::inventory::drag::carried_ids(ui.ctx()) else {
         return;
     };
-    let plan = crate::world::outfit_paste::plan(&world.inventory, &ids, variant, false, &HashSet::new());
+    let plan = crate::world::outfit_paste::plan(&world.inventory, &ids, variant, true, &HashSet::new());
     let locks = world.rlva_wear_locks();
     let unlocked = locks.folder_allows(outfit, true) && locks.folder_allows(variant, true);
     let allowed = st.pending.is_none()
@@ -1042,7 +1083,7 @@ fn variant_drop_target(
     crate::ui::inventory::drag::feedback(
         ui.ctx(),
         if allowed {
-            egui::CursorIcon::Copy
+            egui::CursorIcon::Move
         } else {
             egui::CursorIcon::NotAllowed
         },
@@ -2584,6 +2625,23 @@ pub fn show(
                     actions.push(Action::PickJson);
                 }
             });
+            if !st.editing {
+                use widgets::{ActionKind, action_button_if};
+                if action_button_if(
+                    ui,
+                    p,
+                    "plus",
+                    aurora_i18n::tr!("ui-appearance-new-outfit"),
+                    ActionKind::Flat,
+                    Vec2::new(0.0, 26.0),
+                    st.pending.is_none() && crate::world::outfit_folders::my_outfits(&world.inventory).is_some(),
+                )
+                .clicked()
+                {
+                    st.new_outfit = Some(aurora_i18n::tr!("ui-appearance-new-outfit").to_string());
+                    st.new_outfit_select_name = true;
+                }
+            }
             if !st.editing && matches!(st.tab, TAB_GALLERY | TAB_OUTFITS) {
                 ui.label(
                     RichText::new(aurora_i18n::tr!("outfit-count", count = total))
@@ -4421,6 +4479,77 @@ mod tests {
         );
     }
 
+    /// Each tab keeps only groups that contain matching outfits, including
+    /// mixed groups which have both base and regular outfits.
+    #[test]
+    fn base_and_outfit_tabs_filter_groups_by_their_descendant_outfits() {
+        let mut world = World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
+        model::seed_demo(&mut world.inventory, Uuid::from_u128(1));
+        crate::world::outfit_folders::seed_demo(&mut world.inventory, Uuid::from_u128(1));
+        world.inventory.folders.get_mut(&Uuid::from_u128(744)).expect("Club Red").info.name = ".Club Red".into();
+        world
+            .inventory
+            .folders
+            .get_mut(&Uuid::from_u128(747))
+            .expect("Beach Night")
+            .info
+            .name = ".Beach Night".into();
+        world.inventory.generation += 1;
+        let mut st = AppearanceUi {
+            tab: TAB_BASES,
+            ..Default::default()
+        };
+        let bases = st.shown(&world.inventory).entries.clone();
+        assert!(
+            bases
+                .iter()
+                .any(|entry| entry.id == Uuid::from_u128(740) && entry.group && entry.outfits == 1)
+        );
+        assert!(
+            bases
+                .iter()
+                .any(|entry| entry.id == Uuid::from_u128(741) && entry.group && entry.outfits == 1)
+        );
+        assert!(bases.iter().any(|entry| entry.id == Uuid::from_u128(742) && entry.group));
+        assert!(bases.iter().any(|entry| entry.id == Uuid::from_u128(744) && !entry.group));
+        assert!(bases.iter().any(|entry| entry.id == Uuid::from_u128(747) && !entry.group));
+        assert!(
+            !bases.iter().any(|entry| entry.id == Uuid::from_u128(743)),
+            "empty groups are hidden"
+        );
+        assert!(
+            !bases.iter().any(|entry| entry.id == Uuid::from_u128(745)),
+            "regular outfits are not in Base outfits"
+        );
+
+        st.tab = TAB_OUTFITS;
+        let outfits = st.shown(&world.inventory).entries.clone();
+        assert!(
+            outfits
+                .iter()
+                .any(|entry| entry.id == Uuid::from_u128(740) && entry.group && entry.outfits == 1)
+        );
+        assert!(
+            outfits
+                .iter()
+                .any(|entry| entry.id == Uuid::from_u128(741) && entry.group && entry.outfits == 1)
+        );
+        assert!(outfits.iter().any(|entry| entry.id == Uuid::from_u128(745) && !entry.group));
+        assert!(outfits.iter().any(|entry| entry.id == Uuid::from_u128(746) && !entry.group));
+        assert!(
+            !outfits.iter().any(|entry| entry.id == Uuid::from_u128(747)),
+            "base outfits are not in Outfits"
+        );
+        assert!(
+            !outfits.iter().any(|entry| entry.id == Uuid::from_u128(742)),
+            "base-only subgroups are hidden"
+        );
+        assert!(
+            !outfits.iter().any(|entry| entry.id == Uuid::from_u128(743)),
+            "empty groups are hidden"
+        );
+    }
+
     /// A closed group hides its outfits from the list, the selection and
     /// the ranges; a filter shows every group open; locating the worn outfit
     /// opens the groups that hold it.
@@ -4684,7 +4813,7 @@ mod tests {
         st.open(1, false);
         st.search = "boots".into();
         assert_eq!(st.list_view(), outfits);
-        st.open(2, false);
+        st.open(TAB_WORN, false);
         assert_ne!(st.list_view(), outfits);
         st.open(0, false);
         let gallery = st.list_view();
@@ -4709,7 +4838,9 @@ mod tests {
         let _icons = icons::Icons::load(&ctx, None);
         let mut world = wardrobe(120);
         let mut st = AppearanceUi::default();
-        st.open(1, false);
+        // Generated wardrobe entries are regular outfits; exercise their
+        // list position on the tab that now filters to regular outfits.
+        st.open(TAB_OUTFITS, false);
         st.search = filter.into();
         for _ in 0..4 {
             draw(&ctx, &mut world, &mut st, None);
@@ -4787,7 +4918,7 @@ mod tests {
             .expect("appearance window")
             .size();
 
-        st.open(2, false);
+        st.open(TAB_WORN, false);
         for _ in 0..4 {
             draw(&ctx, &mut world, &mut st, None);
         }
@@ -4796,12 +4927,12 @@ mod tests {
             .expect("appearance window")
             .size();
         if visit_editor {
-            st.open(2, true);
+            st.open(TAB_OUTFITS, true);
             draw(&ctx, &mut world, &mut st, None);
             st.edit_tab = 1;
             draw(&ctx, &mut world, &mut st, None);
         }
-        st.open(1, false);
+        st.open(TAB_OUTFITS, false);
         for _ in 0..4 {
             draw(&ctx, &mut world, &mut st, None);
         }

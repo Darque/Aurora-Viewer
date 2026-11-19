@@ -48,6 +48,20 @@ enum Target {
     Container,
 }
 
+/// An empty plain folder under My Outfits can become an outfit when the
+/// first wearable is dropped into it. Groups which already contain folders
+/// or items remain group containers.
+pub fn can_promote_empty_group(inv: &Inventory, id: Uuid) -> bool {
+    let Some(folder) = inv.folders.get(&id) else {
+        return false;
+    };
+    outfit_folders::container(inv, id)
+        && folder.info.type_default == -1
+        && folder.state == super::inventory::FetchState::Fetched
+        && folder.children.is_empty()
+        && folder.items.is_empty()
+}
+
 fn target(inv: &Inventory, to: Uuid) -> Option<Target> {
     if Some(to) == cof(inv) {
         return Some(Target::Current);
@@ -124,7 +138,10 @@ pub fn plan(inv: &Inventory, ids: &[Uuid], to: Uuid, cut: bool, protected: &Hash
             }
             Ok(Paste::Wear(wear))
         }
-        Target::Outfit => into_outfit(inv, &ids, to, cut, protected).map(Paste::Edit),
+        Target::Outfit => into_outfit(inv, &ids, to, cut, protected, false).map(Paste::Edit),
+        Target::Container if can_promote_empty_group(inv, to) && ids.iter().all(|id| !inv.folders.contains_key(id)) => {
+            into_outfit(inv, &ids, to, cut, protected, true).map(Paste::Edit)
+        }
         Target::Container => into_container(inv, &ids, to, cut, protected).map(Paste::Edit),
     }
 }
@@ -134,7 +151,7 @@ fn outfit_folder(inv: &Inventory, id: Uuid) -> bool {
         || outfit_folders::variant_parent(inv, id).is_some()
 }
 
-fn into_outfit(inv: &Inventory, ids: &[Uuid], to: Uuid, cut: bool, protected: &HashSet<Uuid>) -> Result<Mutation, String> {
+fn into_outfit(inv: &Inventory, ids: &[Uuid], to: Uuid, cut: bool, protected: &HashSet<Uuid>, promote: bool) -> Result<Mutation, String> {
     let mut held: HashSet<_> = folder_links(inv, to).into_iter().filter(|l| !l.folder).map(|l| l.target).collect();
     let mut change = Mutation::default();
     let mut links = Vec::new();
@@ -166,6 +183,16 @@ fn into_outfit(inv: &Inventory, ids: &[Uuid], to: Uuid, cut: bool, protected: &H
     }
     if change.operations.is_empty() {
         return Err(aurora_i18n::tr!("world-outfit-paste-already-in-outfit").into());
+    }
+    if promote {
+        change.operations.insert(
+            0,
+            Operation::Patch {
+                id: to,
+                folder: true,
+                body: aurora_llsd::llsd_map! { "type_default" => FT_OUTFIT },
+            },
+        );
     }
     change.refresh.push(to);
     change.refresh.sort();
@@ -369,6 +396,26 @@ mod tests {
         );
         let change = edit(plan(&inv, &[710, SPARE_SHIRT], COP, false));
         assert_eq!(links(&change), vec![(id(COP), vec![id(SPARE_SHIRT)])]);
+    }
+
+    #[test]
+    fn the_first_wearable_drop_turns_an_empty_my_outfits_folder_into_an_outfit() {
+        let inv = demo();
+        let change = edit(plan(&inv, &[SPARE_SHIRT], 743, true));
+        assert!(matches!(
+            change.operations.as_slice(),
+            [
+                Operation::Patch { id: folder, folder: true, body },
+                Operation::Links { parent, links },
+            ] if *folder == id(743)
+                && body["type_default"].as_i32() == FT_OUTFIT
+                && *parent == id(743)
+                && links.len() == 1
+                && links[0].target == id(SPARE_SHIRT)
+        ));
+        let moved = actions::move_selection(&inv, &[id(SPARE_SHIRT)], id(743), &HashSet::new(), &HashSet::new())
+            .expect("Inventory drag promotes and fills the empty outfit folder");
+        assert_eq!(change.operations.len(), moved.operations.len());
     }
 
     #[test]

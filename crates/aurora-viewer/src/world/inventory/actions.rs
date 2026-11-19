@@ -535,7 +535,8 @@ pub fn move_selection(
         .folders
         .get(&to)
         .is_some_and(|folder| !folder.library && folder.info.type_default == super::super::appearance::FT_OUTFIT)
-        || super::super::outfit_folders::variant_parent(inv, to).is_some();
+        || super::super::outfit_folders::variant_parent(inv, to).is_some()
+        || (super::super::outfit_paste::can_promote_empty_group(inv, to) && ids.iter().all(|id| !inv.folders.contains_key(id)));
     if outfit_destination {
         return match super::super::outfit_paste::plan(inv, ids, to, true, protected)? {
             super::super::outfit_paste::Paste::Edit(change) => Ok(change),

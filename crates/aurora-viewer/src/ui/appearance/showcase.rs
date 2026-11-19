@@ -806,7 +806,9 @@ fn hover_actions(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut Appeara
             actions.push(if is_base { Action::WearBase(id) } else { Action::Wear(id, false) });
         }
     } else {
-        let open = menu::dropdown(&wear_response, p, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+        let requested_open = wear_response.clicked() || st.showcase_state.wear_menu == Some(id);
+        let mut selected = false;
+        let open = menu::dropdown_held(&wear_response, p, requested_open, None, |ui| {
             let has_main_outfit = variants.len() == 1;
             if has_main_outfit
                 && menu::item_if(
@@ -818,6 +820,7 @@ fn hover_actions(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut Appeara
                 )
             {
                 choose_worn_variant(st, id, is_base, None, actions);
+                selected = true;
             }
             for variant in &variants {
                 let Some(folder) = world.inventory.folders.get(variant) else {
@@ -825,10 +828,13 @@ fn hover_actions(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut Appeara
                 };
                 if menu::item_if(ui, p, "folder-filled", &folder.info.name, rules.replace) {
                     choose_worn_variant(st, id, is_base, Some(*variant), actions);
+                    selected = true;
                 }
             }
         });
-        if open {
+        if selected {
+            st.showcase_state.wear_menu = None;
+        } else if open {
             st.showcase_state.wear_menu = Some(id);
         } else if st.showcase_state.wear_menu == Some(id) {
             st.showcase_state.wear_menu = None;
@@ -1836,6 +1842,11 @@ mod tests {
         assert!(click(&ctx, &mut world, &mut st, wear).is_empty());
         let (_, menu) = frame(&ctx, &mut world, &mut st, Vec::new());
         let option = menu.iter().rev().find(|(text, _)| text == "Blue").expect("variant option").1;
+        let (_, reached_option) = frame(&ctx, &mut world, &mut st, vec![egui::Event::PointerMoved(option)]);
+        assert!(
+            reached_option.iter().any(|(text, _)| text == "Blue"),
+            "the Wear menu must stay open while the pointer leaves the card button: {reached_option:?}"
+        );
         let actions = click(&ctx, &mut world, &mut st, option);
         assert!(
             actions

@@ -851,6 +851,15 @@ impl InventoryUi {
         self.rename = Some(InlineRename { id, name, focus: true });
         self.message.clear();
     }
+
+    /// End an inline rename when the same folder has just been created by
+    /// Appearance's variant dialog; that dialog already committed its name.
+    pub fn cancel_rename(&mut self, id: Uuid) {
+        if self.rename.as_ref().is_some_and(|edit| edit.id == id) {
+            self.rename = None;
+        }
+    }
+
     /// show_item_original: clear filters, expand ancestors, select and scroll to the original.
     pub fn show_original(&mut self, inv: &Inventory, id: Uuid) {
         self.show_original_in(inv, id, 0);

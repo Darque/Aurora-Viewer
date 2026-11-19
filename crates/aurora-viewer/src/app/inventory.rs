@@ -1114,6 +1114,25 @@ impl App {
         }
         // the groups of My Outfits are plain inventory folders
         if let crate::world::appearance::Action::Folders(change) = action {
+            for id in change.operations.iter().filter_map(|operation| match operation {
+                aurora_net::inventory::operations::Operation::Folder {
+                    id,
+                    parent,
+                    type_default: -1,
+                    ..
+                } if self
+                    .world
+                    .inventory
+                    .folders
+                    .get(parent)
+                    .is_some_and(|folder| !folder.library && folder.info.type_default == crate::world::appearance::FT_OUTFIT) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            }) {
+                self.inventory_ui.cancel_rename(id);
+            }
             self.apply_inventory_action(crate::ui::inventory::InvAction::Edit(change));
             return;
         }
