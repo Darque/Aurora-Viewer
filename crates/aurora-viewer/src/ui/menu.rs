@@ -326,6 +326,29 @@ pub fn dropdown_held(
     Popup::is_id_open(&resp.ctx, popup_id)
 }
 
+/// A held menu anchored to a rectangle owned by persistent caller state,
+/// rather than to a conditionally drawn button response. Useful for menus
+/// whose trigger is only visible while a larger hover region is active.
+pub fn popup_held_at(
+    ctx: &egui::Context,
+    id: Id,
+    anchor: egui::Rect,
+    layer_id: LayerId,
+    p: &Palette,
+    open: bool,
+    body: impl FnOnce(&mut Ui),
+) -> bool {
+    if dismiss_on_window_change(ctx) {
+        return false;
+    }
+    let popup = Popup::new(id, ctx.clone(), anchor, layer_id)
+        .kind(PopupKind::Menu)
+        .layout(egui::Layout::top_down_justified(egui::Align::Min))
+        .open_memory(open.then_some(egui::SetOpenCommand::Bool(true)));
+    placed(popup, p, PopupCloseBehavior::CloseOnClickOutside, None, body);
+    Popup::is_id_open(ctx, id)
+}
+
 fn placed(
     popup: Popup<'_>,
     p: &Palette,

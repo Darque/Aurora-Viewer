@@ -58,12 +58,18 @@ pub(super) enum Filter {
 pub(super) struct State {
     pub(super) filter: Filter,
     /// Keep the hovered Wear strip alive while its variant menu is open.
-    wear_menu: Option<Uuid>,
+    wear_menu: Option<ActiveWearMenu>,
     /// "N outfits have no picture yet" closed for this session.
     banner_hidden: bool,
     cache: Option<Cache>,
     /// The item count of each outfit drawn, until the inventory changes.
     counts: (u64, HashMap<(Uuid, Option<Uuid>), usize>),
+}
+
+#[derive(Clone, Copy)]
+struct ActiveWearMenu {
+    outfit: Uuid,
+    anchor: Rect,
 }
 
 /// The outfits of the grid and the rail's counts, built again only when the
@@ -277,7 +283,7 @@ pub(super) fn show(
             let cache = state.outfits(&mut pictured, world, shown, &selected_variants);
             (cache.no_picture, cache.favorites, cache.outfits.clone())
         };
-        if state.wear_menu.is_some_and(|id| !outfits.contains(&id)) {
+        if state.wear_menu.is_some_and(|menu| !outfits.contains(&menu.outfit)) {
             state.wear_menu = None;
         }
         st.showcase_state = state;
@@ -355,6 +361,7 @@ pub(super) fn show(
                 }
             });
     }
+    draw_wear_menu(ui, p, world, st, actions);
 }
 
 /// The rail's rows: the collections, then My Outfits folders with their
@@ -689,7 +696,7 @@ fn card_ui(
             actions.push(Action::OutfitPortrait(picture_folder));
         }
     }
-    if hot || st.showcase_state.wear_menu == Some(id) {
+    if hot || st.showcase_state.wear_menu.is_some_and(|menu| menu.outfit == id) {
         hover_actions(ui, p, world, st, id, picture, actions);
     }
     if super::items::double_clicked(&response) {
@@ -805,40 +812,66 @@ fn hover_actions(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut Appeara
         if wear_clicked && rules.replace {
             actions.push(if is_base { Action::WearBase(id) } else { Action::Wear(id, false) });
         }
-    } else {
-        let requested_open = wear_response.clicked() || st.showcase_state.wear_menu == Some(id);
-        let mut selected = false;
-        let open = menu::dropdown_held(&wear_response, p, requested_open, None, |ui| {
-            let has_main_outfit = variants.len() == 1;
-            if has_main_outfit
-                && menu::item_if(
-                    ui,
-                    p,
-                    "shirt-filled",
-                    aurora_i18n::tr!("ui-appearance-showcase-main-outfit"),
-                    rules.replace,
-                )
-            {
-                choose_worn_variant(st, id, is_base, None, actions);
-                selected = true;
-            }
-            for variant in &variants {
-                let Some(folder) = world.inventory.folders.get(variant) else {
-                    continue;
-                };
-                if menu::item_if(ui, p, "folder-filled", &folder.info.name, rules.replace) {
-                    choose_worn_variant(st, id, is_base, Some(*variant), actions);
-                    selected = true;
-                }
-            }
-        });
-        if selected {
-            st.showcase_state.wear_menu = None;
-        } else if open {
-            st.showcase_state.wear_menu = Some(id);
-        } else if st.showcase_state.wear_menu == Some(id) {
+        if st.showcase_state.wear_menu.is_some_and(|menu| menu.outfit == id) {
             st.showcase_state.wear_menu = None;
         }
+    } else {
+        if wear_clicked && rules.replace {
+            st.showcase_state.wear_menu = Some(ActiveWearMenu {
+                outfit: id,
+                anchor: wear_response.rect,
+            });
+        } else if let Some(menu) = st.showcase_state.wear_menu.as_mut().filter(|menu| menu.outfit == id) {
+            menu.anchor = wear_response.rect;
+        }
+    }
+}
+
+fn draw_wear_menu(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceUi, actions: &mut Vec<Action>) {
+    let Some(active) = st.showcase_state.wear_menu else {
+        return;
+    };
+    let id = active.outfit;
+    let is_base = crate::world::base_outfits::is_base_folder(&world.inventory, id);
+    let worn = items::worn_items(world);
+    let Some(mut rules) = gallery::menu_rules(&world.inventory, &worn, st.pending.is_some(), id) else {
+        st.showcase_state.wear_menu = None;
+        return;
+    };
+    rules.replace &= world.rlva_wear_locks().folder_allows(id, true);
+    let variants = crate::world::outfit_folders::variants(&world.inventory, id);
+    if variants.is_empty() {
+        st.showcase_state.wear_menu = None;
+        return;
+    }
+
+    let popup_id = egui::Id::unique(("appearance_showcase_wear_variants", id));
+    let mut selected = false;
+    let open = menu::popup_held_at(ui.ctx(), popup_id, active.anchor, ui.layer_id(), p, true, |ui| {
+        if variants.len() == 1
+            && menu::item_if(
+                ui,
+                p,
+                "shirt-filled",
+                aurora_i18n::tr!("ui-appearance-showcase-main-outfit"),
+                rules.replace,
+            )
+        {
+            choose_worn_variant(st, id, is_base, None, actions);
+            selected = true;
+        }
+        for variant in &variants {
+            let Some(folder) = world.inventory.folders.get(variant) else {
+                continue;
+            };
+            if menu::item_if(ui, p, "folder-filled", &folder.info.name, rules.replace) {
+                choose_worn_variant(st, id, is_base, Some(*variant), actions);
+                selected = true;
+            }
+        }
+    });
+    if selected || !open {
+        st.showcase_state.wear_menu = None;
     }
 }
 
@@ -1857,6 +1890,16 @@ mod tests {
                 "the Wear menu must remain stable across pointer-hover frames: {visible:?}"
             );
         }
+        let (_, away) = frame(&ctx, &mut world, &mut st, vec![egui::Event::PointerMoved(egui::pos2(20.0, 850.0))]);
+        assert!(
+            away.iter().any(|(text, _)| text == "Blue"),
+            "moving away without clicking must not close the menu: {away:?}"
+        );
+        let (_, returned) = frame(&ctx, &mut world, &mut st, vec![egui::Event::PointerMoved(option)]);
+        assert!(
+            returned.iter().any(|(text, _)| text == "Blue"),
+            "the menu must still be stable when the pointer returns: {returned:?}"
+        );
 
         // A click outside closes it and must not be interpreted as still open
         // just because egui drew the popup earlier in that frame.
@@ -1866,7 +1909,7 @@ mod tests {
             !dismissed.iter().any(|(text, _)| text == "Blue"),
             "menu did not dismiss: {dismissed:?}"
         );
-        assert_eq!(st.showcase_state.wear_menu, None);
+        assert!(st.showcase_state.wear_menu.is_none());
 
         // Reopen it and choose the variant to cover the full interaction.
         frame(&ctx, &mut world, &mut st, vec![egui::Event::PointerMoved(inside)]);
