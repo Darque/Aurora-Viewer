@@ -57,6 +57,8 @@ pub(super) enum Filter {
 #[derive(Default)]
 pub(super) struct State {
     pub(super) filter: Filter,
+    /// Keep the hovered Wear strip alive while its variant menu is open.
+    wear_menu: Option<Uuid>,
     /// "N outfits have no picture yet" closed for this session.
     banner_hidden: bool,
     cache: Option<Cache>,
@@ -271,10 +273,15 @@ pub(super) fn show(
             let picture_folder = selected_picture_folder(st, &world.inventory, id);
             !st.outfit_picture(&world.inventory, picture_folder).is_nil()
         };
-        let cache = state.outfits(&mut pictured, world, shown, &selected_variants);
-        let out = (cache.no_picture, cache.favorites, cache.outfits.clone());
+        let (no_picture, favorites, outfits) = {
+            let cache = state.outfits(&mut pictured, world, shown, &selected_variants);
+            (cache.no_picture, cache.favorites, cache.outfits.clone())
+        };
+        if state.wear_menu.is_some_and(|id| !outfits.contains(&id)) {
+            state.wear_menu = None;
+        }
         st.showcase_state = state;
-        out
+        (no_picture, favorites, outfits)
     };
     let base_count = shown
         .iter()
@@ -631,6 +638,19 @@ fn card_ui(
             picture.top() + 17.0,
         );
     }
+    let variants = crate::world::outfit_folders::variants(inv, id);
+    if !variants.is_empty() {
+        let count = aurora_i18n::integer(variants.len() as i64);
+        let galley = painter.layout_no_wrap(count, egui::FontId::proportional(11.0), p.ink);
+        let badge = Rect::from_min_size(
+            egui::pos2(picture.left() + 8.0, picture.bottom() - galley.size().y - 14.0),
+            galley.size() + Vec2::new(12.0, 6.0),
+        );
+        painter.rect_filled(badge, ui.visuals().window_corner_radius, p.raised.gamma_multiply(0.96));
+        painter.galley(badge.center() - galley.size() / 2.0, galley, p.ink);
+        ui.interact(badge, egui::Id::unique(("showcase_variant_count", id)), Sense::hover())
+            .on_hover_text(aurora_i18n::tr!("ui-appearance-gallery-variant-count", count = variants.len()));
+    }
     let own = own_outfit(world, id);
     let favorite = folder.info.favorite;
     if favorite || (hot && own) {
@@ -669,7 +689,7 @@ fn card_ui(
             actions.push(Action::OutfitPortrait(picture_folder));
         }
     }
-    if hot {
+    if hot || st.showcase_state.wear_menu == Some(id) {
         hover_actions(ui, p, world, st, id, picture, actions);
     }
     if super::items::double_clicked(&response) {
@@ -770,15 +790,59 @@ fn hover_actions(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut Appeara
         actions.push(Action::Wear(id, true));
     }
     let wear = aurora_i18n::tr!("common-wear");
+    let variants = crate::world::outfit_folders::variants(&world.inventory, id);
+    let wear_label = if variants.is_empty() {
+        wear.to_owned()
+    } else {
+        format!("{wear}  ▾")
+    };
     let size = Vec2::new(child.available_width(), 30.0);
-    if child
-        .add_enabled_ui(rules.replace, |ui| widgets::primary_button_sized(ui, p, wear, size))
-        .inner
-        .clicked()
-        && rules.replace
-    {
-        actions.push(if is_base { Action::WearBase(id) } else { Action::Wear(id, false) });
+    let wear_response = child
+        .add_enabled_ui(rules.replace, |ui| widgets::primary_button_sized(ui, p, &wear_label, size))
+        .inner;
+    let wear_clicked = wear_response.clicked();
+    if variants.is_empty() {
+        if wear_clicked && rules.replace {
+            actions.push(if is_base { Action::WearBase(id) } else { Action::Wear(id, false) });
+        }
+    } else {
+        let open = menu::dropdown(&wear_response, p, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+            let has_main_outfit = variants.len() == 1;
+            if has_main_outfit
+                && menu::item_if(
+                    ui,
+                    p,
+                    "shirt-filled",
+                    aurora_i18n::tr!("ui-appearance-showcase-main-outfit"),
+                    rules.replace,
+                )
+            {
+                choose_worn_variant(st, id, is_base, None, actions);
+            }
+            for variant in &variants {
+                let Some(folder) = world.inventory.folders.get(variant) else {
+                    continue;
+                };
+                if menu::item_if(ui, p, "folder-filled", &folder.info.name, rules.replace) {
+                    choose_worn_variant(st, id, is_base, Some(*variant), actions);
+                }
+            }
+        });
+        if open {
+            st.showcase_state.wear_menu = Some(id);
+        } else if st.showcase_state.wear_menu == Some(id) {
+            st.showcase_state.wear_menu = None;
+        }
     }
+}
+
+fn choose_worn_variant(st: &mut AppearanceUi, outfit: Uuid, is_base: bool, variant: Option<Uuid>, actions: &mut Vec<Action>) {
+    st.variant_selections.insert(outfit, variant.unwrap_or(Uuid::nil()));
+    actions.push(if is_base {
+        Action::WearBase(outfit)
+    } else {
+        Action::Wear(outfit, false)
+    });
 }
 
 /// The preview of the outfit `id`: its picture and the ways to set one, its
@@ -812,11 +876,17 @@ pub(super) fn preview_panel(
     // uploaded HD image, then its free square inventory thumbnail.
     let hd = model::outfit_hd_picture(inv, picture_folder);
     st.wanted_local_hd.insert(picture_folder);
+    if picture_folder != id {
+        st.wanted_local_hd.insert(id);
+    }
     let image = st.outfit_picture(inv, picture_folder);
     if !image.is_nil() {
         st.wanted_images.insert(image);
     }
-    let local = st.local_hd_images.get(&picture_folder);
+    let local = st
+        .local_hd_images
+        .get(&picture_folder)
+        .or_else(|| (picture_folder != id).then(|| st.local_hd_images.get(&id)).flatten());
     let uploaded = hd.and_then(|hd| images.get(&hd));
     let thumbnail = images.get(&image);
     let full = local.or(uploaded).or(thumbnail);
@@ -1059,7 +1129,7 @@ fn variant_selector(
             // measures the space after the previous button and otherwise
             // consumes the right arrow's entire slot.
             let field_width = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(0.0);
-            let (field, _) = ui.allocate_exact_size(Vec2::new(field_width, 28.0), Sense::hover());
+            let (field, field_response) = ui.allocate_exact_size(Vec2::new(field_width, 28.0), Sense::click());
             ui.painter().rect_filled(field, ui.visuals().window_corner_radius, p.field);
             ui.painter().rect_stroke(
                 field,
@@ -1078,6 +1148,32 @@ fn variant_selector(
             job.wrap = egui::text::TextWrapping::truncate_at_width((field.width() - 12.0).max(1.0));
             let text = ui.painter().layout_job(job);
             ui.painter().galley(field.center() - text.size() / 2.0, text, p.ink);
+            if let Some(variant) = selected
+                && let Some(folder) = inv.folders.get(&variant)
+            {
+                if field_response.double_clicked() {
+                    st.variant_dialog = Some(super::VariantDialog {
+                        outfit,
+                        variant: Some(variant),
+                        name: folder.info.name.clone(),
+                    });
+                }
+                menu::context_menu(&field_response, p, |ui| {
+                    if menu::item_if(
+                        ui,
+                        p,
+                        "pencil-filled",
+                        aurora_i18n::tr!("ui-appearance-gallery-rename-variant"),
+                        crate::world::inventory::actions::renameable(inv, variant),
+                    ) {
+                        st.variant_dialog = Some(super::VariantDialog {
+                            outfit,
+                            variant: Some(variant),
+                            name: folder.info.name.clone(),
+                        });
+                    }
+                });
+            }
             let next = ui
                 .add_enabled_ui(choice_count > 1, |ui| {
                     widgets::glass_action_icon(ui, p, "arrow-right", aurora_i18n::tr!("common-next"), Vec2::splat(28.0), p.ink)
@@ -1364,7 +1460,7 @@ mod tests {
     fn variant_selector_arrows_cycle_between_one_accessory_and_main_outfit() {
         let (mut world, _) = grouped();
         let outfit = Uuid::from_u128(744);
-        let (variant, _) = crate::world::outfit_folders::create_variant(&world.inventory, outfit).expect("variant");
+        let (variant, _) = crate::world::outfit_folders::create_variant_named(&world.inventory, outfit, "Accessory").expect("variant");
         let mut folder = world.inventory.folders[&Uuid::from_u128(743)].clone();
         folder.info.id = variant;
         folder.info.parent = outfit;
@@ -1438,7 +1534,7 @@ mod tests {
             "the left arrow returns to the single accessory"
         );
 
-        let (second, _) = crate::world::outfit_folders::create_variant(&world.inventory, outfit).expect("second variant");
+        let (second, _) = crate::world::outfit_folders::create_variant_named(&world.inventory, outfit, "Second").expect("second variant");
         let mut folder = world.inventory.folders[&Uuid::from_u128(743)].clone();
         folder.info.id = second;
         folder.info.parent = outfit;
@@ -1601,15 +1697,25 @@ mod tests {
     }
 
     fn click(ctx: &egui::Context, world: &mut World, st: &mut AppearanceUi, at: egui::Pos2) -> Vec<Action> {
-        let mut actions = frame(ctx, world, st, vec![egui::Event::PointerMoved(at)]).0;
+        let mut actions = Vec::new();
         for pressed in [true, false] {
-            let button = egui::Event::PointerButton {
-                pos: at,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: Default::default(),
-            };
-            actions.extend(frame(ctx, world, st, vec![button]).0);
+            actions.extend(
+                frame(
+                    ctx,
+                    world,
+                    st,
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                )
+                .0,
+            );
         }
         actions
     }
@@ -1682,6 +1788,62 @@ mod tests {
             actions.iter().any(|a| matches!(a, Action::Wear(id, false) if *id == club_red)),
             "{actions:?}"
         );
+    }
+
+    #[test]
+    fn a_gallery_wear_menu_selects_a_variant_and_shows_its_count_badge() {
+        let (mut world, mut st) = grouped();
+        let outfit = Uuid::from_u128(744);
+        let variant = Uuid::from_u128(9901);
+        let mut folder = world.inventory.folders[&Uuid::from_u128(743)].clone();
+        folder.info.id = variant;
+        folder.info.parent = outfit;
+        folder.info.name = "Blue".into();
+        folder.info.type_default = -1;
+        folder.children.clear();
+        folder.items.clear();
+        world.inventory.add_folders(vec![folder.info.clone()], false);
+        world.inventory.folders.get_mut(&variant).expect("variant").state = crate::world::inventory::FetchState::Fetched;
+        world.inventory.generation += 1;
+        st.showcase_state.filter = Filter::Folder(Uuid::from_u128(740));
+
+        let ctx = egui::Context::default();
+        crate::theme::Theme::default().apply(&ctx, 1.0);
+        for _ in 0..4 {
+            draw(&ctx, &mut world, &mut st, None);
+        }
+        let (_, initial) = frame(&ctx, &mut world, &mut st, Vec::new());
+        let red = initial.iter().find(|(text, _)| text == "Club Red").expect("outfit title").1;
+        let black = initial.iter().find(|(text, _)| text == "Club Black").expect("next outfit title").1;
+        let card = (black.x - red.x).abs() - GAP;
+        let picture_top = red.y - 6.0 - card;
+        assert!(
+            initial.iter().any(|(text, at)| {
+                text == &aurora_i18n::integer(1) && at.x >= red.x && at.x < red.x + 32.0 && at.y > picture_top && at.y < red.y
+            }),
+            "variant count badge was not drawn in the card: {initial:?}"
+        );
+
+        let inside = egui::pos2(red.x + card / 2.0, picture_top + card / 2.0);
+        frame(&ctx, &mut world, &mut st, vec![egui::Event::PointerMoved(inside)]);
+        let (_, hovered) = frame(&ctx, &mut world, &mut st, vec![egui::Event::PointerMoved(inside)]);
+        let label = format!("{}  ▾", aurora_i18n::tr!("common-wear"));
+        let wear = hovered
+            .iter()
+            .find(|(text, at)| text == &label && at.x >= red.x && at.x < red.x + card && at.y < red.y)
+            .map(|(_, at)| *at + Vec2::new(3.0, 5.0))
+            .expect("Wear dropdown button");
+        assert!(click(&ctx, &mut world, &mut st, wear).is_empty());
+        let (_, menu) = frame(&ctx, &mut world, &mut st, Vec::new());
+        let option = menu.iter().rev().find(|(text, _)| text == "Blue").expect("variant option").1;
+        let actions = click(&ctx, &mut world, &mut st, option);
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::Wear(id, false) if *id == outfit)),
+            "actions={actions:?}; option={option:?}; visible={menu:?}"
+        );
+        assert_eq!(st.variant_selections.get(&outfit), Some(&variant));
     }
 
     /// The window keeps its size and its footer in view with the showcase,

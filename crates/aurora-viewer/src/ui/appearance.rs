@@ -57,6 +57,8 @@ pub struct AppearanceUi {
     /// Chosen child folder for each outfit, or `Uuid::nil()` for its main
     /// outfit without a variant.
     pub variant_selections: HashMap<Uuid, Uuid>,
+    /// Naming dialog for adding or renaming one of an outfit's variants.
+    pub(super) variant_dialog: Option<VariantDialog>,
     /// The gallery tab as Aurora's showcase (`showcase.rs`) rather than the
     /// Legacy Viewer's tiles: the app sets it from Preferences › Aurora.
     pub showcase: bool,
@@ -137,6 +139,13 @@ pub struct AppearanceUi {
     selection_info: Option<SelectionInfo>,
     /// The Favorite Wearables window, which shares the rows and their menu.
     pub(crate) wearable_favorites: wearable_favorites::State,
+}
+
+#[derive(Clone)]
+pub(super) struct VariantDialog {
+    pub outfit: Uuid,
+    pub variant: Option<Uuid>,
+    pub name: String,
 }
 
 struct SelectionInfo {
@@ -781,7 +790,13 @@ impl AppearanceUi {
             *generation = inv.generation;
             found.clear();
         }
-        *found.entry(outfit).or_insert_with(|| model::outfit_image(inv, outfit))
+        let picture = *found.entry(outfit).or_insert_with(|| model::outfit_image(inv, outfit));
+        if !picture.is_nil() {
+            return picture;
+        }
+        // A new variant begins with its parent's outfit image. A picture set
+        // directly on the variant still wins above, so portraits can diverge.
+        crate::world::outfit_folders::variant_parent(inv, outfit).map_or(Uuid::nil(), |parent| self.outfit_picture(inv, parent))
     }
 
     pub fn refresh(&mut self, inv: &mut crate::world::inventory::Inventory) {
@@ -930,6 +945,7 @@ fn variant_row(
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width((count_left - text_left - 6.0).max(1.0));
     let galley = ui.painter().layout_job(job);
+    let name_hit = egui::Rect::from_x_y_ranges(text_left..=(text_left + galley.size().x).min(count_left - 6.0), rect.y_range());
     ui.painter().galley(
         egui::pos2(text_left, rect.center().y - galley.size().y / 2.0),
         galley,
@@ -940,6 +956,31 @@ fn variant_row(
         st.outfit_selection.single(outfit);
         st.clear_items();
     }
+    if response.double_clicked()
+        && response.interact_pointer_pos().is_some_and(|at| name_hit.contains(at))
+        && crate::world::inventory::actions::renameable(&world.inventory, variant)
+    {
+        st.variant_dialog = Some(VariantDialog {
+            outfit,
+            variant: Some(variant),
+            name: folder.info.name.clone(),
+        });
+    }
+    menu::context_menu(&response, p, |ui| {
+        if menu::item_if(
+            ui,
+            p,
+            "pencil-filled",
+            aurora_i18n::tr!("ui-appearance-gallery-rename-variant"),
+            crate::world::inventory::actions::renameable(&world.inventory, variant),
+        ) {
+            st.variant_dialog = Some(VariantDialog {
+                outfit,
+                variant: Some(variant),
+                name: folder.info.name.clone(),
+            });
+        }
+    });
     variant_drop_target(ui, p, world, st, outfit, variant, &response, actions);
     row_gap(ui);
 
@@ -5117,6 +5158,17 @@ mod tests {
         // a thumbnail comes first, with no walk
         inv.folders.get_mut(&id(1)).expect("outfit").info.thumbnail = id(502);
         assert_eq!(st.outfit_picture(&inv, id(1)), id(502));
+        inv.add_folders(
+            vec![aurora_net::inventory::InvFolder {
+                id: id(2),
+                parent: id(1),
+                name: "Variant".into(),
+                type_default: -1,
+                ..Default::default()
+            }],
+            false,
+        );
+        assert_eq!(st.outfit_picture(&inv, id(2)), id(502), "a new variant uses its parent image");
         assert!(st.outfit_picture(&inv, id(99)).is_nil(), "unknown outfit");
     }
     #[test]

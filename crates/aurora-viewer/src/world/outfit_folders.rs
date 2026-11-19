@@ -121,31 +121,45 @@ pub fn variant_parent(inv: &Inventory, variant: Uuid) -> Option<Uuid> {
     variants(inv, parent).contains(&variant).then_some(parent)
 }
 
-/// Create a named child folder that acts as one outfit variation. The
-/// generated name is unique among its sibling variants so each new entry is
-/// immediately distinguishable in the selector.
-pub fn create_variant(inv: &Inventory, outfit: Uuid) -> Result<(Uuid, Mutation), String> {
+/// Create a named variant. Duplicate sibling names receive a numbered suffix,
+/// which keeps the gallery and inventory tree unambiguous.
+pub fn create_variant_named(inv: &Inventory, outfit: Uuid, name: &str) -> Result<(Uuid, Mutation), String> {
     if !in_my_outfits(inv, outfit) {
         return Err(aurora_i18n::tr!("world-outfit-folders-cannot-move-here").into());
     }
-    let base = crate::text_validation::default_name("photo-knob-variant");
-    let taken: std::collections::HashSet<_> = variants(inv, outfit)
-        .into_iter()
-        .filter_map(|id| inv.folders.get(&id).map(|folder| folder.info.name.to_lowercase()))
-        .collect();
-    let name = if !taken.contains(&base.to_lowercase()) {
-        base.to_owned()
-    } else {
-        (2..)
-            .map(|number| format!("{base} {number}"))
-            .find(|name| !taken.contains(&name.to_lowercase()))
-            .expect("a variant name is available")
-    };
+    let name = unique_variant_name(inv, outfit, name, None)?;
     let change = actions::create_folder(outfit, &name)?;
     let Some(Operation::Folder { id, .. }) = change.operations.first() else {
         return Err(aurora_i18n::tr!("common-folder-not-found").into());
     };
     Ok((*id, change))
+}
+
+/// Rename one of an outfit's variant folders, keeping sibling names unique.
+pub fn rename_variant(inv: &Inventory, variant: Uuid, name: &str) -> Result<Mutation, String> {
+    let outfit = variant_parent(inv, variant).ok_or(aurora_i18n::tr!("common-folder-not-found"))?;
+    let name = unique_variant_name(inv, outfit, name, Some(variant))?;
+    actions::patch(inv, variant, aurora_llsd::llsd_map! { "name" => name })
+}
+
+fn unique_variant_name(inv: &Inventory, outfit: Uuid, name: &str, except: Option<Uuid>) -> Result<String, String> {
+    let base = actions::clean_name(name)?;
+    let taken: std::collections::HashSet<_> = variants(inv, outfit)
+        .into_iter()
+        .filter(|id| Some(*id) != except)
+        .filter_map(|id| inv.folders.get(&id).map(|folder| folder.info.name.to_lowercase()))
+        .collect();
+    if !taken.contains(&base.to_lowercase()) {
+        return Ok(base);
+    }
+    (2..)
+        .map(|number| {
+            let suffix = format!(" {number}");
+            let stem: String = base.chars().take(63usize.saturating_sub(suffix.chars().count())).collect();
+            format!("{stem}{suffix}")
+        })
+        .find(|name| !taken.contains(&name.to_lowercase()))
+        .ok_or_else(|| aurora_i18n::tr!("world-outfit-folders-already-there").into())
 }
 
 /// Run a normal outfit wear plan against a temporary inventory view where
@@ -799,7 +813,7 @@ mod tests {
     fn variants_can_be_created_and_inventory_drops_link_items_into_them() {
         let mut inv = demo();
         let outfit = id(704);
-        let (variant, created) = create_variant(&inv, outfit).expect("create a variant");
+        let (variant, created) = create_variant_named(&inv, outfit, "Variant").expect("create a variant");
         let [
             Operation::Folder {
                 id: created_id,
@@ -828,11 +842,26 @@ mod tests {
         assert_eq!(variant_parent(&inv, variant), Some(outfit));
         assert!(actions::destination(&inv, variant));
 
-        let (next, next_change) = create_variant(&inv, outfit).expect("second variant");
+        let (next, next_change) = create_variant_named(&inv, outfit, "Variant").expect("second variant");
         assert_ne!(next, variant);
         assert!(matches!(
             next_change.operations.as_slice(),
             [Operation::Folder { name, .. }] if name == "Variant 2"
+        ));
+
+        let mut second_folder = inv.folders[&id(743)].clone();
+        second_folder.info.id = next;
+        second_folder.info.parent = outfit;
+        second_folder.info.name = "Variant 2".into();
+        second_folder.info.type_default = FT_NONE;
+        second_folder.children.clear();
+        second_folder.items.clear();
+        inv.folders.insert(next, second_folder);
+        inv.folders.get_mut(&outfit).expect("outfit").children.push(next);
+        let renamed = rename_variant(&inv, next, "Evening").expect("rename variant");
+        assert!(matches!(
+            renamed.operations.as_slice(),
+            [Operation::Patch { id, folder: true, body }] if *id == next && body["name"].as_str() == "Evening"
         ));
 
         let item = inv

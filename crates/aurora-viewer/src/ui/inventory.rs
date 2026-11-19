@@ -1256,6 +1256,7 @@ fn item_row(
         let font_id = egui::FontId::proportional(13.0);
         let coded = weather_coded_name(it);
         let shown = coded.unwrap_or(&it.name);
+        let name_width = ui.painter().layout_no_wrap(shown.to_owned(), font_id.clone(), p.ink).size().x;
         let mut label = super::widgets::name_with_suffix(shown, "", font_id.clone(), p.ink);
         if worn.is_some()
             && let Some(section) = label.sections.first_mut()
@@ -1282,7 +1283,11 @@ fn item_row(
             })
             .inner;
         ui.set_opacity(opacity);
-        item_response(ui, p, inv, it, r, permissions, st, prefs, facts, actions);
+        let name_rect = egui::Rect::from_min_size(
+            r.rect.min + egui::vec2(2.0, 0.0),
+            egui::vec2(name_width.min((r.rect.width() - 4.0).max(0.0)), r.rect.height()),
+        );
+        item_response(ui, p, inv, it, r, Some(name_rect), permissions, st, prefs, facts, actions);
     });
 }
 
@@ -1295,6 +1300,7 @@ fn item_response(
     inv: &Inventory,
     it: &aurora_net::inventory::InvItem,
     r: egui::Response,
+    rename_area: Option<egui::Rect>,
     permissions: Option<permissions::Permissions>,
     st: &mut InventoryUi,
     prefs: &mut InventoryPreferences,
@@ -1320,7 +1326,12 @@ fn item_response(
         st.reveal_path.clear();
     }
     if r.double_clicked() {
-        context::double_click(inv, id, st, prefs, facts, actions);
+        let on_name = rename_area.is_some_and(|area| r.interact_pointer_pos().is_some_and(|at| area.contains(at)));
+        if on_name && rules::renameable(inv, id) {
+            st.begin_rename(inv, id);
+        } else {
+            context::double_click(inv, id, st, prefs, facts, actions);
+        }
     }
     super::menu::context_menu(&r, p, |ui| context::show(ui, p, inv, id, st, prefs, facts, actions));
     r
@@ -1371,6 +1382,7 @@ fn folder_row(
             egui::Sense::click()
         };
         let mut job = tree::name(&label, p);
+        let name_width = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()).size().x);
         // the " (Protected) " suffix of LLFolderViewItem::drawLabel
         // (indra/llui/llfolderviewitem.cpp), as the rows' tag
         let tag = prefs.protected.contains(&id).then(|| {
@@ -1379,8 +1391,18 @@ fn folder_row(
         });
         let r = super::widgets::inventory_item_label_tagged(ui, job, state.selection.contains(&id), sense, None, tag);
         ui.set_opacity(opacity);
+        let name_rect = egui::Rect::from_min_size(
+            r.rect.min + egui::vec2(2.0, 0.0),
+            egui::vec2(name_width.min((r.rect.width() - 4.0).max(0.0)), r.rect.height()),
+        );
+        let name_double =
+            r.double_clicked() && r.interact_pointer_pos().is_some_and(|at| name_rect.contains(at)) && rules::renameable(inv, id);
         if folder_response(ui, p, inv, id, r, Some(resp.rect), open, state, prefs, facts, actions).double_clicked() {
-            *open = !*open;
+            if name_double {
+                state.begin_rename(inv, id);
+            } else {
+                *open = !*open;
+            }
         }
     });
 }
@@ -5722,6 +5744,41 @@ mod tests {
         item_frame(&ctx, &inv, &mut st, vec![key(egui::Key::F2)]);
         assert_eq!(st.rename.as_ref().map(|e| e.id), st.selected);
         assert!(st.dialog.is_none());
+    }
+
+    #[test]
+    fn double_clicking_an_item_name_starts_inline_rename() {
+        let ctx = egui::Context::default();
+        let mut inv = Inventory::default();
+        crate::world::inventory::demo::seed(&mut inv, Uuid::from_u128(2));
+        let mut st = InventoryUi::default();
+        let pos = egui::pos2(40.0, 18.0);
+        for _ in 0..2 {
+            item_frame(&ctx, &inv, &mut st, vec![egui::Event::PointerMoved(pos)]);
+            item_frame(
+                &ctx,
+                &inv,
+                &mut st,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            item_frame(
+                &ctx,
+                &inv,
+                &mut st,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        assert_eq!(st.rename.as_ref().map(|rename| rename.id), Some(Uuid::from_u128(8100)));
     }
 
     #[test]

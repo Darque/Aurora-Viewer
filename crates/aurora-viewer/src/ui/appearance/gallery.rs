@@ -249,7 +249,7 @@ fn menu_body(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceU
             aurora_i18n::tr!("ui-appearance-gallery-add-outfit-variant"),
             rules.folder && !multiple,
         ) {
-            add_variant(inv, st, id, actions);
+            request_add_variant(st, id);
         }
     } else {
         if menu::item_if(
@@ -277,7 +277,7 @@ fn menu_body(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceU
             aurora_i18n::tr!("ui-appearance-gallery-add-outfit-variant"),
             rules.folder && !multiple,
         ) {
-            add_variant(inv, st, id, actions);
+            request_add_variant(st, id);
         }
         if menu::item_if(
             ui,
@@ -530,18 +530,71 @@ fn menu_body(ui: &mut egui::Ui, p: &Palette, world: &World, st: &mut AppearanceU
     );
 }
 
-fn add_variant(inv: &Inventory, st: &mut AppearanceUi, outfit: Uuid, actions: &mut Vec<Action>) {
-    match crate::world::outfit_folders::create_variant(inv, outfit) {
-        Ok((variant, change)) => {
-            st.variant_selections.insert(outfit, variant);
-            st.message.clear();
-            actions.push(Action::Folders(change));
-        }
-        Err(reason) => st.message = reason,
-    }
+fn request_add_variant(st: &mut AppearanceUi, outfit: Uuid) {
+    st.variant_dialog = Some(super::VariantDialog {
+        outfit,
+        variant: None,
+        name: aurora_i18n::tr!("photo-knob-variant").to_string(),
+    });
 }
 
 pub(super) fn dialogs(ctx: &egui::Context, p: &Palette, world: &mut World, st: &mut AppearanceUi, actions: &mut Vec<Action>) {
+    if let Some(mut dialog) = st.variant_dialog.clone() {
+        let creating = dialog.variant.is_none();
+        let mut close = false;
+        let response = crate::ui::widgets::Modal::new(egui::Id::unique("outfit_variant_name")).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.label(
+                RichText::new(if creating {
+                    aurora_i18n::tr!("ui-appearance-variant-name-create")
+                } else {
+                    aurora_i18n::tr!("ui-appearance-variant-name-edit")
+                })
+                .size(17.0)
+                .color(p.ink),
+            );
+            ui.add_space(8.0);
+            let r = crate::ui::widgets::restricted_text_field(
+                ui,
+                true,
+                &mut dialog.name,
+                crate::ui::widgets::TextPolicy::PrintableNoPipe,
+                |b, _| egui::TextEdit::singleline(b).char_limit(63).desired_width(f32::INFINITY),
+            );
+            r.request_focus();
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                use widgets::{ActionKind, action_button, action_button_if};
+                let valid = !dialog.name.trim().is_empty() && st.pending.is_none();
+                let size = egui::Vec2::new(0.0, 26.0);
+                if action_button_if(ui, p, "check", aurora_i18n::tr!("common-save"), ActionKind::Primary, size, valid).clicked()
+                    || (valid && crate::ui::widgets::enter_pressed(ui))
+                {
+                    let result = if let Some(variant) = dialog.variant {
+                        crate::world::outfit_folders::rename_variant(&world.inventory, variant, &dialog.name).map(|change| (None, change))
+                    } else {
+                        crate::world::outfit_folders::create_variant_named(&world.inventory, dialog.outfit, &dialog.name)
+                            .map(|(variant, change)| (Some(variant), change))
+                    };
+                    match result {
+                        Ok((variant, change)) => {
+                            if let Some(variant) = variant {
+                                st.variant_selections.insert(dialog.outfit, variant);
+                            }
+                            st.message.clear();
+                            actions.push(Action::Folders(change));
+                            close = true;
+                        }
+                        Err(reason) => st.message = reason,
+                    }
+                }
+                if action_button(ui, p, "x", aurora_i18n::tr!("common-cancel"), ActionKind::Flat, size).clicked() {
+                    close = true;
+                }
+            });
+        });
+        st.variant_dialog = if close || response.should_close() { None } else { Some(dialog) };
+    }
     if let Some((id, mut name)) = st.gallery.rename.clone() {
         let mut close = false;
         let response = crate::ui::widgets::Modal::new(egui::Id::unique("outfit_rename")).show(ctx, |ui| {
@@ -826,6 +879,21 @@ mod tests {
             .find_map(|s| text_position(&s.shape, option))
             .expect("variant menu option");
         let actions = click(&ctx, &mut world, &mut st, position, PointerButton::Primary);
+        assert!(actions.is_empty(), "creation waits for the name dialog: {actions:?}");
+        assert_eq!(st.variant_dialog.as_ref().map(|dialog| dialog.name.as_str()), Some("Variant"));
+        let actions = frame(
+            &ctx,
+            &mut world,
+            &mut st,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        )
+        .0;
         let [Action::Folders(change)] = actions.as_slice() else {
             panic!("variant creation mutation: {actions:?}");
         };
@@ -847,6 +915,55 @@ mod tests {
     }
 
     #[test]
+    fn renaming_a_variant_submits_a_folder_name_patch() {
+        let ctx = egui::Context::default();
+        crate::theme::Theme::default().apply(&ctx, 1.0);
+        let _icons = crate::ui::icons::Icons::load(&ctx, None);
+        let mut world = World::new(std::sync::Arc::new(crate::scene::avatar::AvatarLibrary::load()));
+        model::seed_demo(&mut world.inventory, Uuid::from_u128(1));
+        let outfit = Uuid::from_u128(703);
+        let variant = Uuid::from_u128(9902);
+        world.inventory.add_folders(
+            vec![aurora_net::inventory::InvFolder {
+                id: variant,
+                parent: outfit,
+                name: "Variant".into(),
+                type_default: -1,
+                ..Default::default()
+            }],
+            false,
+        );
+        world.inventory.folders.get_mut(&variant).expect("variant").state = crate::world::inventory::FetchState::Fetched;
+        let mut st = AppearanceUi::default();
+        st.variant_dialog = Some(super::super::VariantDialog {
+            outfit,
+            variant: Some(variant),
+            name: "Evening".into(),
+        });
+        let actions = frame(
+            &ctx,
+            &mut world,
+            &mut st,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        )
+        .0;
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [Action::Folders(change)] if matches!(change.operations.as_slice(),
+                    [aurora_net::inventory::operations::Operation::Patch { id, folder: true, body }] if *id == variant && body["name"].as_str() == "Evening")
+            ),
+            "{actions:?}"
+        );
+    }
+
+    #[test]
     fn appearance_variant_row_selects_and_accepts_a_wearable_drop() {
         let ctx = egui::Context::default();
         crate::theme::Theme::default().apply(&ctx, 1.0);
@@ -855,7 +972,7 @@ mod tests {
         model::seed_demo(&mut world.inventory, Uuid::from_u128(1));
         crate::world::outfit_folders::seed_demo(&mut world.inventory, Uuid::from_u128(1));
         let outfit = Uuid::from_u128(744);
-        let (variant, _) = crate::world::outfit_folders::create_variant(&world.inventory, outfit).expect("variant");
+        let (variant, _) = crate::world::outfit_folders::create_variant_named(&world.inventory, outfit, "Variant").expect("variant");
         let mut folder = world.inventory.folders[&Uuid::from_u128(743)].clone();
         folder.info.id = variant;
         folder.info.parent = outfit;

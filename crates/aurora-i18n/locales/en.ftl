@@ -2188,6 +2188,13 @@ ui-context-add-to-contact-set = Add to contact set
 ui-context-new-contact-set = New contact set…
 ui-appearance-gallery-add-to-your-outfit = Add to your outfit
 ui-appearance-gallery-add-outfit-variant = Add outfit variant
+ui-appearance-variant-name-create = Name this outfit variant
+ui-appearance-variant-name-edit = Rename this outfit variant
+ui-appearance-gallery-variant-count = { $count ->
+    [one] { $count } variant
+   *[other] { $count } variants
+}
+ui-appearance-gallery-rename-variant = Rename variant
 ui-appearance-showcase-main-outfit = Main outfit
 common-add-2 = Add...
 ui-environment-adjusts-the-sky-for-your-view-only-other-people = Adjusts the sky for your view only; other people do not see these changes.

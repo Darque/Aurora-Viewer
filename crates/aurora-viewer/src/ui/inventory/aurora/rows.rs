@@ -422,6 +422,7 @@ pub(in super::super) fn item(
         }
     }
     let galley = ui.painter().layout_job(name);
+    let name_hit = Rect::from_x_y_ranges(name_left..=(name_left + galley.size().x).min(cols.name_end), rect.y_range());
     let mut x = name_left + galley.size().x;
     let clip = ui.clip_rect();
     ui.set_clip_rect(clip.intersect(Rect::from_min_max(full.min, Pos2::new(cols.name_end, full.bottom()))));
@@ -455,7 +456,7 @@ pub(in super::super) fn item(
     ui.set_clip_rect(clip);
     paint_columns(ui, p, inv, &st.view, id, cols, frame, permissions, rect.center().y, selected);
     ui.set_opacity(opacity);
-    item_response(ui, p, inv, it, r, permissions, st, prefs, facts, actions);
+    item_response(ui, p, inv, it, r, Some(name_hit), permissions, st, prefs, facts, actions);
     if !quick.is_empty() {
         let right = cols.name_end - trailing - if trailing > 0.0 { 8.0 } else { 0.0 };
         ui.set_clip_rect(clip.intersect(Rect::from_x_y_ranges(name_rect.x_range(), rect.y_range())));
@@ -561,6 +562,7 @@ pub(in super::super) fn folder(
     job.wrap = egui::text::TextWrapping::truncate_at_width((cols.name_end - name_left - count_w - star_w - locked_w).max(24.0));
     let galley = ui.painter().layout_job(job);
     let mut name_end = name_left + galley.size().x;
+    let name_right = name_end.min(cols.name_end);
     let clip = ui.clip_rect();
     ui.set_clip_rect(clip.intersect(Rect::from_min_max(full.min, Pos2::new(cols.name_end, full.bottom()))));
     widgets::paint_row_text(ui.painter(), galley, name_left, rect.center().y, p.ink);
@@ -597,18 +599,27 @@ pub(in super::super) fn folder(
     let lead = caret.as_ref().map(|caret| caret.rect);
     let was_open = *open;
     ui.set_opacity(opacity);
+    let name_hit = Rect::from_x_y_ranges(name_left..=name_right, rect.y_range());
+    let rename_double =
+        r.double_clicked() && r.interact_pointer_pos().is_some_and(|at| name_hit.contains(at)) && rules::renameable(inv, id);
     let r = folder_response(ui, p, inv, id, r, lead, open, st, prefs, facts, actions);
     if frame.explorer {
         // The explorer goes into a folder (a double-click, or cargo held
         // over it) instead of opening it in place.
-        if r.double_clicked() || (*open && !was_open) {
+        if rename_double {
+            st.begin_rename(inv, id);
+        } else if r.double_clicked() || (*open && !was_open) {
             st.browse = id;
             st.selection.clear();
             st.selected = None;
         }
         *open = false;
     } else if r.double_clicked() {
-        *open = !*open;
+        if rename_double {
+            st.begin_rename(inv, id);
+        } else {
+            *open = !*open;
+        }
     }
 }
 

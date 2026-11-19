@@ -8,19 +8,28 @@ folder directly under the outfit.
 The Appearance preview shows left and right controls when variants are
 available. When there is one child folder, the selector also includes
 **Main outfit**, so that accessory can be worn with the direct outfit items or
-left off. With multiple variants, one of the variants is always selected. Use **Add outfit
-variant** in the outfit preview or thumbnail menu to create one; new variants
-are named `Variant`, `Variant 2`, and so on. The selected child supplies the
-outfit's thumbnail and detailed portrait, and the selection is remembered in
-the viewer's settings. Wearing the outfit applies its direct items together
-with the selected variant's contents; sibling variants are excluded. The same
-behavior applies to base outfits.
+left off. With multiple variants, one of the variants is always selected. Use
+**Add outfit variant** in the outfit preview or thumbnail menu to enter a name
+for a new variant; duplicate sibling names receive a number. Double-click a
+variant name or use its context menu to rename it. The selected child supplies
+the outfit's thumbnail and detailed portrait. If the child has no picture, it
+uses the parent outfit's picture until it gets its own. The selection is
+remembered in the viewer's settings. Wearing the outfit applies its direct
+items together with the selected variant's contents; sibling variants are
+excluded. The same behavior applies to base outfits.
+
+Gallery cards show a variant count badge. Hovering a card replaces the badge
+with its Wear action; outfits with variants have a Wear menu that lets you
+choose which variant to wear. For a single child, the menu also offers
+**Main outfit**.
 
 When an outfit is expanded in the **Outfits** or **Base outfits** list, its
 variants appear at the same indent as the outfit's items, with their contents
-shown beneath each folder. Select a row to make that variation active, or drag
-wearable inventory items onto it to add links to that variation. Dragging a
-link from another outfit moves that link into the variation; dragging an
+shown beneath each folder. Select a row to make that variation active,
+double-click its name to rename it, or drag wearable inventory items onto it
+to add links to that variation. Double-clicking a folder or object name in
+Inventory starts inline rename; right-click menus also offer Rename. Dragging
+a link from another outfit moves that link into the variation; dragging an
 ordinary inventory item leaves the original in place and adds an outfit link.
 The variant folder is also available in Inventory, where it accepts wearable
 items through the same outfit-link rules.
