@@ -1847,6 +1847,44 @@ mod tests {
             reached_option.iter().any(|(text, _)| text == "Blue"),
             "the Wear menu must stay open while the pointer leaves the card button: {reached_option:?}"
         );
+
+        // The hover actions remain anchored while the pointer is over the
+        // popup; repeated frames must not lose and recreate the menu.
+        for _ in 0..3 {
+            let (_, visible) = frame(&ctx, &mut world, &mut st, vec![egui::Event::PointerMoved(option)]);
+            assert!(
+                visible.iter().any(|(text, _)| text == "Blue"),
+                "the Wear menu must remain stable across pointer-hover frames: {visible:?}"
+            );
+        }
+
+        // A click outside closes it and must not be interpreted as still open
+        // just because egui drew the popup earlier in that frame.
+        click(&ctx, &mut world, &mut st, egui::pos2(20.0, 850.0));
+        let (_, dismissed) = frame(&ctx, &mut world, &mut st, Vec::new());
+        assert!(
+            !dismissed.iter().any(|(text, _)| text == "Blue"),
+            "menu did not dismiss: {dismissed:?}"
+        );
+        assert_eq!(st.showcase_state.wear_menu, None);
+
+        // Reopen it and choose the variant to cover the full interaction.
+        frame(&ctx, &mut world, &mut st, vec![egui::Event::PointerMoved(inside)]);
+        let (_, hovered) = frame(&ctx, &mut world, &mut st, vec![egui::Event::PointerMoved(inside)]);
+        let wear = hovered
+            .iter()
+            .find(|(text, at)| text == &label && at.x >= red.x && at.x < red.x + card && at.y < red.y)
+            .map(|(_, at)| *at + Vec2::new(3.0, 5.0))
+            .expect("Wear dropdown button after dismissal");
+        click(&ctx, &mut world, &mut st, wear);
+        let (_, reopened) = frame(&ctx, &mut world, &mut st, Vec::new());
+        let option = reopened
+            .iter()
+            .rev()
+            .find(|(text, _)| text == "Blue")
+            .expect("reopened variant option")
+            .1;
+        frame(&ctx, &mut world, &mut st, vec![egui::Event::PointerMoved(option)]);
         let actions = click(&ctx, &mut world, &mut st, option);
         assert!(
             actions

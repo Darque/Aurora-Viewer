@@ -316,8 +316,14 @@ pub fn dropdown_held(
     if dismiss_on_window_change(&resp.ctx) {
         return false;
     }
+    let popup_id = Popup::default_response_id(resp);
     let popup = Popup::menu(resp).open_memory(open.then_some(egui::SetOpenCommand::Bool(true)));
-    placed(popup, p, PopupCloseBehavior::CloseOnClickOutside, place, body)
+    placed(popup, p, PopupCloseBehavior::CloseOnClickOutside, place, body);
+    // `Popup::show` returns `Some` when it was drawn, including the frame in
+    // which an outside click closes it. External owners use this result to
+    // decide whether to keep drawing the anchor, so report egui's state after
+    // the close behavior has run instead of whether it was drawn this frame.
+    Popup::is_id_open(&resp.ctx, popup_id)
 }
 
 fn placed(

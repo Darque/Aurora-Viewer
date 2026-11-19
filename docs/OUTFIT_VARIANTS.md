@@ -21,8 +21,8 @@ excluded. The same behavior applies to base outfits.
 Gallery cards show a variant count badge. Hovering a card replaces the badge
 with its Wear action; outfits with variants have a Wear menu that lets you
 choose which variant to wear. The menu stays open as the pointer moves from
-the Wear button to an option. For a single child, the menu also offers
-**Main outfit**.
+the Wear button to an option, and closes after choosing an option or clicking
+outside it. For a single child, the menu also offers **Main outfit**.
 
 When an outfit is expanded in the **Outfits** or **Base outfits** list, its
 variants appear at the same indent as the outfit's items, with their contents
